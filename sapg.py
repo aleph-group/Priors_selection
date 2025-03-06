@@ -1,7 +1,6 @@
 import torch 
 import tqdm
-
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+from utils import device
 
 
 class SAPG:

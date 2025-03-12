@@ -44,7 +44,7 @@ class L2(Likelihood):
         self.p = p
         
     def f(self, x, y):
-        return 0.5 * torch.norm(y - self.p.A(x)) / 2 / self.sigma**2
+        return 0.5 * torch.norm(y - self.p.A(x))**2 / self.sigma**2
 
     def grad(self, x, y):
         return self.p.A_adjoint(self.p.A(x) - y) / self.sigma**2

@@ -30,3 +30,21 @@ def plot_MC_corr(X_trace, ax, title="X"):
         ds = dict(X=X_trace.reshape(-1))
         arviz.plot_autocorr(ds, var_names=['X'], ax=ax)
         ax[0].set_title(title + ": {:.1f}".format(ess))
+
+
+def tcheby(x, n):
+    if x >= 1:
+        return torch.cosh(n * torch.acosh(x))
+    if x <= -1:
+        return torch.cosh(n * torch.acosh(-x))*(-1)**n
+    else:
+        return torch.cos(n * torch.acos(x))
+    
+
+def tcheby_der(x, n):
+    if x >= 1:
+        return n * torch.sinh(n * torch.acosh(x)) / torch.sqrt(x**2 - 1)
+    if x <= -1:
+        return n * torch.sinh(n * torch.acosh(-x)) / torch.sqrt(x**2 - 1) * (-1)**(n+1)
+    else:
+        return n * torch.sin(n * torch.acos(x)) / torch.sqrt(1 - x**2)

@@ -1,10 +1,11 @@
 import torch 
 import tqdm
 from utils import device
+from sampling import ULA, SKROCK
 
 
 class SAPG:
-    def __init__(self, y, g, f, gamma, gammap, lam_reg, X_init=None, project='clamp'):
+    def __init__(self, y, g, f, gamma, gammap, lam_reg, X_init=None, project='clamp', sampler='ULA', sampler_kwargs=None):
         """
         y: observations
         f: likelihood
@@ -22,39 +23,39 @@ class SAPG:
             self.lamp_reg = 0.98*lam_reg
 
         if project == 'clamp':
-            self.proj = lambda t: torch.clamp(t, 0., 1.)
+            proj = lambda t: torch.clamp(t, 0., 1.)
         elif project == 'refl':
-            self.proj = lambda t: torch.abs(t)
+            proj = lambda t: torch.abs(t)
         else:
-            self.proj = lambda t: t
+            proj = lambda t: t
         
-        if X_init is None:
-            self.X_prior, self.X_post = torch.randn_like(y).to(device), torch.randn_like(y).to(device)
-        else: self.X_prior, self.X_post = self.proj(X_init.clone()), self.proj(X_init.clone())
+        if sampler_kwargs is None:
+            sampler_kwargs = {}
+
+        if X_init is None:  # initialize the chains
+            X_prior, X_post = proj(torch.randn_like(y).to(device)), proj(torch.randn_like(y).to(device))
+        else: X_prior, X_post = proj(X_init), proj(X_init)
+
+        gradU = lambda t: f.grad(t, y) + g.grad(t, lam_reg)
+        gradU_prior = lambda t: g.grad(t, self.lamp_reg)
+        if sampler == 'ULA':
+            self.sampler = ULA(gradU, gamma, X_post, proj=proj)
+            self.sampler_prior = ULA(gradU_prior, gammap, X_prior, proj=proj)
+        elif sampler == 'SKROCK':
+            self.sampler = SKROCK(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
+            self.sampler_prior = SKROCK(gradU_prior, gammap, X_prior, proj=proj, **sampler_kwargs)
+        else:
+            raise ValueError("Unknown sampler")
 
         self.X_prior_warm, self.X_post_warm = None, None
-
-    def _ULA_it_post(self):
-        with torch.no_grad():
-            self.X_post = self.proj(self.X_post - self.gamma * self.f.grad(self.X_post, self.y) - 
-                                      self.gamma * self.g.grad(self.X_post, self.lam_reg) + 
-                                      torch.sqrt(2*self.gamma) * torch.randn_like(self.X_post))
-
-    def _ULA_it_prior(self):
-            self.X_prior = self.proj(self.X_prior - self.gammap * self.g.grad(self.X_prior, self.lamp_reg) + 
-                                       torch.sqrt(2*self.gammap) * torch.randn_like(self.X_prior))
-            
-    def sample_post(self, nb_it, X_init=None):
-        if X_init is not None:
-            X_post = X_init.clone()
-        else:
-            X_post = self.X_post.clone()
+    
+    def sample_post(self, nb_it):
+        X_post = self.sampler.X
 
         hist, post_hist = torch.zeros((nb_it,) + X_post.shape, device=device), torch.zeros(nb_it, device=device)
         for n in tqdm.tqdm(range(nb_it)):
             with torch.no_grad():
-                X_post = self.proj(X_post - self.gamma * self.f.grad(X_post, self.y) - 
-                          self.gamma * self.g.grad(X_post, self.lam_reg) + torch.sqrt(2*self.gamma) * torch.randn_like(X_post))
+                X_post = self.sampler()
                 hist[n] = X_post.detach().clone()
                 post_hist[n] = self.post(X_post, self.y).detach()
         return hist, post_hist
@@ -72,24 +73,24 @@ class SAPG:
 
         for n in tqdm.tqdm(range(nb_steps)):
             with torch.no_grad():
-                self._ULA_it_post()
+                X_post = self.sampler()
 
-                if warm_up_prior:
+                if warm_up_prior:  # more steps for prior
                     for _ in range(thinning_prior):
-                        self._ULA_it_prior()
+                        X_prior = self.sampler_prior()
                 if log_stats and n >= it_burnin:
-                    X_post_trace[count_stats] =  torch.flatten(self.X_post).detach()
-                    post_hist[count_stats] = self.post(self.X_post, self.y).detach()
+                    X_post_trace[count_stats] =  torch.flatten(X_post).detach()
+                    post_hist[count_stats] = self.post(X_post, self.y).detach()
                     
                     if warm_up_prior:
-                        X_prior_trace[count_stats] = torch.flatten(self.X_prior).detach()
-                        prior_hist[count_stats] = - self.g(self.X_prior).detach()
+                        X_prior_trace[count_stats] = torch.flatten(X_prior).detach()
+                        prior_hist[count_stats] = - self.g(X_prior).detach()
                         
                     count_stats += 1
 
-        self.X_post_warm = self.X_post.clone()
+        self.X_post_warm = X_post.clone()
         if warm_up_prior:
-            self.X_prior_warm = self.X_prior.clone()
+            self.X_prior_warm = X_prior.clone()
         if log_stats:
             if warm_up_prior:
                 return X_post_trace.cpu(), X_prior_trace.cpu(), post_hist[:count_stats].cpu(), prior_hist.cpu()
@@ -104,7 +105,9 @@ class SAPG:
     def update_param(self, new_param):
         self.eta = torch.log(new_param)
         self.g.update_param(new_param)
-        
+        self.sampler.gradU = lambda t: self.f.grad(t, self.y) + self.g.grad(t, self.lam_reg)
+        self.sampler.gradU_prior = lambda t: self.g.grad(t, self.lamp_reg)
+
     def run(self, delta, nb_steps, bounds, init_param=None, thinning_global=1,
             burnin_ratio=0.8, thinning_post=10, thinning_prior=10, tol=1e-4, alpha=None,
             reuse_post=False):
@@ -114,10 +117,10 @@ class SAPG:
         if ((self.X_prior_warm is None) and (alpha is None) and (not reuse_post)) or (self.X_post_warm is None):
             print("Warm up MC first")
             return 
-        else:
-            self.X_posterior = self.X_post_warm.clone()
+        else:  # reset sampler to post warm up state
+            self.sampler.update_state(self.X_post_warm)
             if alpha is None and not reuse_post:
-                self.X_prior = self.X_prior_warm.clone()
+                self.sampler_prior.update_state(self.X_prior_warm)
 
         if init_param is not None:
             self.update_param(init_param)
@@ -143,18 +146,18 @@ class SAPG:
             with torch.no_grad():
 
                 for _ in range(thinning_post):
-                    self._ULA_it_post()
+                    self.sampler()
                 if alpha is None:
-                    if reuse_post:
-                        self.X_prior = self.X_post.clone()
+                    if reuse_post:  # restart prior chain from last post sample
+                        self.sampler_prior.update_state(self.sampler.X)
                     for _ in range(thinning_prior):
-                        self._ULA_it_prior()
+                       self.sampler_prior()
                 
                 if n % thinning_global == 0:  # update parameters
                     step = delta(n)
-                    grad_param_post = g.grad_param(self.X_post)
+                    grad_param_post = g.grad_param(self.sampler.X)
                     if alpha is None:
-                        grad_param_prior = g.grad_param(self.X_prior)
+                        grad_param_prior = g.grad_param(self.sampler_prior.X)
                     else:
                         grad_param_prior = self.dimx / alpha / self.g.param
                     param_hist[nit_param] = g.param.detach().clone()

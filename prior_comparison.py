@@ -2,7 +2,7 @@ import torch
 from priors import L2
 import tqdm
 from utils import device
-
+from sampling import ULA
 
 class DegradedLikelihood:
     def __init__(self, y, prior, physics, sigma, gamma,
@@ -27,30 +27,24 @@ class DegradedLikelihood:
         self.lam_reg = lam_reg  # prior regularization parameter
 
         if project == 'clamp':
-            self.proj = lambda t: torch.clamp(t, 0., 1.)
+            proj = lambda t: torch.clamp(t, 0., 1.)
         elif project == 'refl':
-            self.proj = lambda t: torch.abs(t)
+            proj = lambda t: torch.abs(t)
         else:
-            self.proj = lambda t: t  
+            proj = lambda t: t  
             
         if X_init is None:
-            self.X_post = self.proj(torch.randn_like(y)).to(device)
+            X_post = self.proj(torch.randn_like(y)).to(device)
         else: 
-            self.X_post = self.proj(X_init.clone())
+            X_post = self.proj(X_init.clone())
         self.y_sub, self.y_add = None, None
         if noise is None:
             self._add_noise()
         else:
             self.y_sub, self.y_add = self.y - noise, self.y + noise
-    
-    def _ULA_it(self, y):
-        """
-        ULA step given the observations y.
-        """
-        with torch.no_grad():
-            self.X_post =  self.proj(self.X_post - self.gamma * self.f_add.grad(self.X_post, y) - 
-                                     self.gamma * self.prior.grad(self.X_post, self.lam_reg) + 
-                                     torch.sqrt(2*self.gamma) * torch.randn_like(self.X_post))
+        
+        gradU = lambda t, y: self.f_add.grad(t, y) + self.g.grad(t, lam_reg)
+        self.sampler = ULA(gradU, gamma, X_post, proj=proj)
 
     def _add_noise(self):
         noise = torch.randn_like(self.y)*self.f.sigma
@@ -67,7 +61,7 @@ class DegradedLikelihood:
             lik_trace = torch.zeros(n_rem, device=device)
         for n in tqdm.tqdm(range(it_burnin)):  # warmup stage
             with torch.no_grad():
-                self._ULA_it(self.y_sub)
+                self.sampler(self.y_sub)
         
         lik1_mean = torch.tensor(0., device=device)
 
@@ -77,14 +71,14 @@ class DegradedLikelihood:
 
             with torch.no_grad():
                 for _ in range(thinning):
-                    self._ULA_it(self.y_sub)
+                    self.sampler(self.y_sub)
                     
-                lik1 = self.f_add(self.X_post, self.y_add).detach()
+                lik1 = self.f_add(self.sampler.X, self.y_add).detach()
                 lik1_mean = (lik1_mean*n + lik1) / (n + 1)  # p(y+/x)
 
                 if log_stats:
-                    X_post_trace[n] =  torch.flatten(self.X_post).detach()
-                    post_hist[n] = lik1 + self.prior(self.X_post)             
+                    X_post_trace[n] =  torch.flatten(self.sampler.X).detach()
+                    post_hist[n] = lik1 + self.prior(self.sampler.X)             
                     lik_trace[n] = lik1             
 
                 if n % patience == 0:
@@ -110,7 +104,7 @@ class DegradedLikelihood:
         self._add_noise()
         for _ in tqdm.tqdm(range(it_burnin)):  # warmup stage
             with torch.no_grad():
-                self._ULA_it(self.y_sub)
+                self.sampler(self.y_sub)
 
         trange = tqdm.tqdm(range(n_rem))
         for n in trange:
@@ -118,9 +112,9 @@ class DegradedLikelihood:
             with torch.no_grad():
                 self._add_noise()  # regenerate additional noise
                 for _ in range(thinning):
-                    self._ULA_it(self.y_sub)
+                    self.sampler(self.y_sub)
                 
-                lik1_mean = (lik1_mean*n + self.f_add(self.X_post, self.y_add).detach()) / (n + 1)
+                lik1_mean = (lik1_mean*n + self.f_add(self.sampler.X, self.y_add).detach()) / (n + 1)
                 if n % patience == 0:
                     if n > 0:
                         if torch.abs(old_mean - lik1_mean) < tol:

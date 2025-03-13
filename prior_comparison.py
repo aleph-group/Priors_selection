@@ -34,16 +34,16 @@ class DegradedLikelihood:
             proj = lambda t: t  
             
         if X_init is None:
-            X_post = self.proj(torch.randn_like(y)).to(device)
+            X_post = proj(torch.randn_like(y)).to(device)
         else: 
-            X_post = self.proj(X_init.clone())
+            X_post = proj(X_init.clone())
         self.y_sub, self.y_add = None, None
         if noise is None:
             self._add_noise()
         else:
             self.y_sub, self.y_add = self.y - noise, self.y + noise
         
-        gradU = lambda t, y: self.f_add.grad(t, y) + self.g.grad(t, lam_reg)
+        gradU = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, lam_reg)
         self.sampler = ULA(gradU, gamma, X_post, proj=proj)
 
     def _add_noise(self):

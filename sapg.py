@@ -131,17 +131,22 @@ class SAPG:
         g = self.g
         nit_param = 0  # num of param updates - 1
         nit_mean = 0  # num of mean estimator updates - 1
-
-        prior_hist = torch.zeros(nb_steps // thinning_global, device=device)
-        post_hist = torch.zeros(nb_steps // thinning_global, device=device)
-        mean_hist =  torch.zeros(nb_steps // thinning_global, device=device)
-        param_hist = torch.zeros(nb_steps // thinning_global, device=device)
         
+        if g.param.ndim == 0:  # scalar parameter
+            param_hist = torch.zeros(nb_steps // thinning_global, device=device)
+            prior_hist = torch.zeros(nb_steps // thinning_global, device=device)
+            post_hist = torch.zeros(nb_steps // thinning_global, device=device)
+            mean_hist = torch.zeros(nb_steps // thinning_global, device=device)
+        else:
+            param_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
+            prior_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
+            post_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
+            mean_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
         it_burnin = int(burnin_ratio*nb_steps)  # first iteration for updating mean
         
         trange = tqdm.tqdm(range(1, nb_steps + 1))
         for n in trange:
-            trange.set_description("theta={:.4f}, eta={:.4f}".format(g.param.item(), self.eta.item()))
+            trange.set_description("theta={}, eta={}".format(g.param, self.eta))
 
             with torch.no_grad():
 
@@ -172,16 +177,16 @@ class SAPG:
                     
                     nit_param += 1 
                     if nit_mean > 0:  # update mean estimator
-                        new_mean = (nit_mean*mean_hist[nit_mean-1] + g.param.item()) / (nit_mean + 1)
+                        new_mean = (nit_mean*mean_hist[nit_mean-1] + g.param) / (nit_mean + 1)
                         mean_hist[nit_mean] = new_mean
                         nit_mean += 1 
 
-                        if abs(mean_hist[nit_mean - 1] - mean_hist[nit_mean - 2]) < tol:  # stop if mean estimator has converged
+                        if torch.max(abs(mean_hist[nit_mean - 1] - mean_hist[nit_mean - 2])) < tol:  # stop if mean estimator has converged
                             break
 
                     elif n >= it_burnin:
                         nit_mean = 1
-                        mean_hist[0] = g.param.item()
+                        mean_hist[0] = g.param
 
-        return (g.param.item(), param_hist[:nit_param].cpu(), mean_hist[:nit_mean].cpu(), 
+        return (g.param.cpu().numpy(), param_hist[:nit_param].cpu(), mean_hist[:nit_mean].cpu(), 
                 post_hist[:nit_param].cpu(), prior_hist[:nit_param].cpu())

@@ -66,23 +66,24 @@ class CombinedPrior(ParametrizedPrior):
         return  self.prior1.grad_param(x) - self.prior2.grad_param(x)
 
 
-class GSPnP(dinv.optim.prior.RED):
+class GSDPrior(ParametrizedPrior):
     r"""s
     Gradient-Step Denoiser prior.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.explicit_prior = True
+    def __init__(self, param, denoiser, sigma_denoiser=0.1):
+        super().__init__(param)
+        self.denoiser = denoiser
+        self.sigma_denoiser = sigma_denoiser
 
-    def forward(self, x, *args, **kwargs):
-        r"""
-        Computes the prior :math:`g(x)`.
+    def forward(self, x):
+        return self.param*self.denoiser.potential(x, self.sigma_denoiser)
 
-        :param torch.tensor x: Variable :math:`x` at which the prior is computed.
-        :return: (torch.tensor) prior :math:`g(x)`.
-        """
-        return self.denoiser.potential(x, *args, **kwargs)
+    def grad(self, x, lam_reg=None):
+        return self.param*(x - self.denoiser(x, self.sigma_denoiser))
+
+    def grad_param(self, x):
+        return self.denoiser.potential(x, self.sigma_denoiser)
 
 
 class WaveletPrior(ParametrizedPrior):
@@ -99,6 +100,7 @@ class WaveletPrior(ParametrizedPrior):
     def grad_param(self, x):
         return self.dinv_tv(x)
 
+
 class TikhonovPrior(ParametrizedPrior):
     def __init__(self, param):
         super().__init__(param)
@@ -111,6 +113,7 @@ class TikhonovPrior(ParametrizedPrior):
 
     def grad_param(self, x):
         return torch.norm(x)**2 / 2.
+
 
 class L1Prior(ParametrizedPrior):
     def __init__(self, param):
@@ -127,17 +130,19 @@ class L1Prior(ParametrizedPrior):
     def grad_param(self, x):
         return torch.sum(torch.abs(x))
 
-class RedPrior(ParametrizedPrior):
-    def __init__(self, param, dinv_red_prior, sigma_denoiser=0.1):
-        super().__init__(param)
-        self.dinv_red_prior = dinv_red_prior
-        self.sigma_denoiser = sigma_denoiser
-        
+
+class CRRPrior(ParametrizedPrior):
+    def __init__(self, param, crr_model):
+        super().__init__(param)  # param = lambda, mu
+        self.crr_model = crr_model
+
     def grad(self, x, lam_reg):
-        return self.param * self.dinv_red_prior.grad(x, sigma_denoiser=self.sigma_denoiser)
+        return self.param[0] * self.crr_model(self.param[1]*x)
 
     def forward(self, x):
-        return self.param * self.dinv_red_prior(x, sigma=self.sigma_denoiser) 
+        return self.param[0] * self.crr_model.cost(self.param[1]*x)
 
     def grad_param(self, x):
-        return  self.dinv_red_prior(x, sigma=self.sigma_denoiser) 
+        return torch.tensor([self.crr_model.cost(self.param[1]*x), 
+                             self.param[0] * torch.sum(x*self.crr_model(self.param[1]*x))], 
+                            device=device)

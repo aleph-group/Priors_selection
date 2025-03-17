@@ -140,9 +140,10 @@ class CRRPrior(ParametrizedPrior):
         return self.param[0] * self.crr_model(self.param[1]*x)
 
     def forward(self, x):
-        return self.param[0] * self.crr_model.cost(self.param[1]*x)
+        return self.param[0] * self.crr_model.cost(self.param[1]*x) / self.param[1]
 
     def grad_param(self, x):
-        return torch.tensor([self.crr_model.cost(self.param[1]*x), 
-                             self.param[0] * torch.sum(x*self.crr_model(self.param[1]*x))], 
+        return torch.tensor([self.crr_model.cost(self.param[1]*x) / self.param[1], 
+                             self.param[0] * (torch.sum(x*self.crr_model(self.param[1]*x)) / self.param[1] -
+                                              self.crr_model.cost(self.param[1]*x) / self.param[1]**2)], 
                             device=device)

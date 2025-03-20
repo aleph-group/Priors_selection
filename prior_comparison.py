@@ -137,7 +137,7 @@ class DegradedLikelihood:
                         old_mean = lik1_mean.clone()
 
         if log_stats:
-            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu()
+            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu(), lik1_mean
         else:
             return lik1_mean.item()
             

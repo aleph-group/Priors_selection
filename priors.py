@@ -115,6 +115,34 @@ class TikhonovPrior(ParametrizedPrior):
         return torch.norm(x)**2 / 2.
 
 
+class WeightedTikhonovPrior(ParametrizedPrior):  # coded for flat vectors
+    def __init__(self, param, mat):
+        super().__init__(param)
+        self.weights = mat  # d, d matrix
+        
+    def grad(self, x, lam_reg):
+        return torch.reshape(self.weights @ torch.reshape(x, (-1, 1)), (1, 1, -1)) * self.param
+
+    def forward(self, x): 
+        return torch.sum(torch.reshape(x, (-1, 1))* self.weights@torch.reshape(x, (-1, 1))) * self.param / 2.
+
+    def grad_param(self, x):
+        return torch.sum(torch.reshape(x, (-1, 1))* self.weights@torch.reshape(x, (-1, 1))) / 2.
+
+    
+class TikhonovPrior(ParametrizedPrior):
+    def __init__(self, param):
+        super().__init__(param)
+
+    def grad(self, x, lam_reg):
+        return x * self.param
+
+    def forward(self, x):
+        return torch.norm(x)**2 * self.param / 2.
+
+    def grad_param(self, x):
+        return torch.norm(x)**2 / 2.
+
 class L1Prior(ParametrizedPrior):
     def __init__(self, param):
         super().__init__(param)
@@ -147,3 +175,12 @@ class CRRPrior(ParametrizedPrior):
                              self.param[0] * (torch.sum(x*self.crr_model(self.param[1]*x)) / self.param[1] -
                                               self.crr_model.cost(self.param[1]*x) / self.param[1]**2)], 
                             device=device)
+
+
+class CRRPriorStaticMu(CRRPrior):
+    def __init__(self, param, crr_model):
+        super().__init__(param, crr_model)  # param = lambda, mu
+        self.crr_model = crr_model
+
+    def grad_param(self, x):
+        return self.crr_model.cost(self.param[1]*x) / self.param[1]

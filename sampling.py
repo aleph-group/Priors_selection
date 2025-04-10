@@ -41,7 +41,6 @@ class SKROCK(Sampler):
             self.muj[j] = 2 * w1 * tcheby(w0, j-1) / tcheby(w0, j)
             self.nuj[j] = 2 * w0 * tcheby(w0, j-1) / tcheby(w0, j)
         self.kj[2:] = 1 - self.nuj[2:]
-        print(self.muj, self.nuj, self.kj)
 
     def __call__(self, *args, **kwargs):
         with torch.no_grad():
@@ -50,8 +49,19 @@ class SKROCK(Sampler):
             Kp = (self.X - self.muj[1]*self.gamma*self.gradU(self.X + self.nuj[1]*Z, *args, **kwargs) +
                   self.kj[1]*Z)
             for j in range(2, self.s + 1):
-                Kpp = - self.muj[j]*self.gradU(Kp, *args, **kwargs) + self.nuj[j]*Kp + self.kj[j]*K
+                Kpp = - self.muj[j]*self.gamma*self.gradU(Kp, *args, **kwargs) + self.nuj[j]*Kp + self.kj[j]*K
                 K, Kp = Kp, Kpp
             self.X = self.proj(Kpp.clone())
         return self.X
-    
+
+
+class Gaussian(Sampler):
+    def __init__(self, gradU, gamma, X_init, proj, Q, D):
+        super().__init__(None, None, X_init, proj)
+        self.Q, self.D = Q, D
+        self.d = self.Q.shape[0]
+    def __call__(self, mean):
+        with torch.no_grad():
+            self.X = self.proj(self.Q @ torch.sqrt(torch.diag(self.D)) @ torch.randn(self.d, device=device) + mean)
+        return self.X
+        

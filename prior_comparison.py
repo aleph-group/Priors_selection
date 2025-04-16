@@ -2,11 +2,12 @@ import torch
 from priors import L2
 import tqdm
 from utils import device
-from sampling import ULA
+from sampling import ULA, GaussianDiag
+
 
 class DegradedLikelihood:
-    def __init__(self, y, prior, physics, sigma, gamma,
-                 X_init=None, lam_reg=None, project='clamp', noise=None):
+    def __init__(self, y, prior, physics, sigma, gamma, sampler=ULA, sampler_kwargs={},
+                 X_init=None, lam_reg=None, project='clamp', noise=None, alpha=0.5, **kwargs):
         """
         y: observations
         prior: model tested
@@ -19,8 +20,9 @@ class DegradedLikelihood:
         """
         self.prior = prior
         self.f = L2(sigma, physics)  # likelihood for Ax + N
-        self.f_add = L2(2**0.5*sigma, physics)  # likelihood for Ax + N + e
-
+        self.alpha = torch.tensor(alpha, device=device)
+        self.f_add = L2(sigma / torch.sqrt(1-self.alpha), physics)  # likelihood for Ax + N + e
+        self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
         self.y = y
         self.dimx = y.numel()
         self.gamma = gamma  # MC step
@@ -41,45 +43,48 @@ class DegradedLikelihood:
         if noise is None:
             self._add_noise()
         else:
-            self.y_sub, self.y_add = self.y - noise, self.y + noise
+            self.y_sub, self.y_add = self.y - noise/self.calpha, self.y + self.calpha*noise
         
         gradU = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, lam_reg)
-        self.sampler = ULA(gradU, gamma, X_post, proj=proj)
+        self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
+        if sampler == GaussianDiag:   # if x follows a diagonal Gaussian prior
+            self.factor = lambda t: self.alpha*t/(self.f.sigma**2+self.alpha*kwargs["sigmax"]**2) 
+        else:
+            self.factor = lambda t: t
 
     def _add_noise(self):
-        noise = torch.randn_like(self.y)*self.f.sigma
-        self.y_sub, self.y_add = self.y - noise, self.y + noise 
+        noise = torch.randn_like(self.y, device=device)*self.f.sigma
+        self.y_sub, self.y_add = self.y - noise/self.calpha, self.y + noise*self.calpha 
 
-    def compute_test(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=1, tol=1e-4, patience=10):
+    def compute_test(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=1, tol=1e-4, patience=10, normalize=False):
         
         it_burnin = int(burnin_ratio*nb_steps)
         n_rem = nb_steps - it_burnin
         
         if log_stats:
             post_hist = torch.zeros(n_rem, device=device)
-            X_post_trace = torch.zeros([n_rem, self.dimx]).to(device)
+            X_post_trace = torch.zeros([n_rem, self.dimx], device=device)
             lik_trace = torch.zeros(n_rem, device=device)
         for n in tqdm.tqdm(range(it_burnin)):  # warmup stage
             with torch.no_grad():
                 self.sampler(self.y_sub)
         
         lik1_mean = torch.tensor(0., device=device)
-
+        
         trange = tqdm.tqdm(range(n_rem))
         for n in trange:
             trange.set_description("t={:.4f}".format(lik1_mean.item()))
 
             with torch.no_grad():
                 for _ in range(thinning):
-                    self.sampler(self.y_sub)
-                    
-                lik1 = self.f_add(self.sampler.X, self.y_add).detach()
-                lik1_mean = (lik1_mean*n + lik1) / (n + 1)  # p(y+/x)
-
+                    self.sampler(self.factor(self.y_sub))
+                n = torch.tensor(n, device=device)
+                lik1 = - self.f_add(self.sampler.X, self.y_add)
+                lik_trace[n] = lik1             
+                lik1_mean = torch.logsumexp(lik_trace[:n+1], 0) - torch.log(n + 1) 
                 if log_stats:
                     X_post_trace[n] =  torch.flatten(self.sampler.X).detach()
                     post_hist[n] = lik1 + self.prior(self.sampler.X)             
-                    lik_trace[n] = lik1             
 
                 if n % patience == 0:
                     if n > 0:
@@ -89,13 +94,16 @@ class DegradedLikelihood:
                             old_mean = lik1_mean.clone()
                     else:
                         old_mean = lik1_mean.clone()
+        if normalize:
+            lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi)) - self.dimx * torch.log(self.f_add.sigma) 
+            lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi)) - self.dimx * torch.log(self.f_add.sigma) 
         if log_stats:
-            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu()
+            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu(), lik1_mean.item()
         else:
             return lik1_mean.item() 
             
 
-    def compute_test2(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=10, tol=1e-4, patience=10):
+    def compute_test2(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=10, tol=1e-4, patience=10, normalize=False):
         lik1_mean = torch.tensor(0., device=device)
 
         it_burnin = int(burnin_ratio*nb_steps)
@@ -112,16 +120,17 @@ class DegradedLikelihood:
                 self.sampler(self.y_sub)
 
         trange = tqdm.tqdm(range(n_rem))
+
         for n in trange:
             trange.set_description("t={:.4f}".format(lik1_mean.item()))
             with torch.no_grad():
                 self._add_noise()  # regenerate additional noise
                 for _ in range(thinning):
-                    self.sampler(self.y_sub)
-
-                lik1 = self.f_add(self.sampler.X, self.y_add).detach()
-                lik1_mean = (lik1_mean*n + lik1) / (n + 1)
-
+                    self.sampler(self.factor(self.y_sub))
+                
+                lik1 = - self.f_add(self.sampler.X, self.y_add)
+                lik_trace[n] = lik1             
+                lik1_mean = torch.logsumexp(lik_trace[:n+1], 0) - torch.log(n + 1) 
                 if log_stats:
                     X_post_trace[n] =  torch.flatten(self.sampler.X).detach()
                     post_hist[n] = lik1 + self.prior(self.sampler.X)             
@@ -135,9 +144,11 @@ class DegradedLikelihood:
                             old_mean = lik1_mean.clone()
                     else:
                         old_mean = lik1_mean.clone()
-
+        if normalize:
+            lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi)) - self.dimx * torch.log(self.f_add.sigma) 
+            lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi)) - self.dimx * torch.log(self.f_add.sigma)
         if log_stats:
-            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu(), lik1_mean
+            return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu(), lik1_mean.item()
         else:
             return lik1_mean.item()
             

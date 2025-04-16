@@ -62,6 +62,17 @@ class Gaussian(Sampler):
         self.d = self.Q.shape[0]
     def __call__(self, mean):
         with torch.no_grad():
-            self.X = self.proj(self.Q @ torch.sqrt(torch.diag(self.D)) @ torch.randn(self.d, device=device) + mean)
+            self.X = self.proj((self.Q @ torch.sqrt(torch.diag(self.D))) @ torch.randn(self.d, device=device) + torch.reshape(mean, (-1,)))
+        return self.X
+        
+
+class GaussianDiag(Sampler):
+    def __init__(self, gradU, gamma, X_init, proj, d, sigma):
+        super().__init__(None, None, X_init, proj)
+        self.sigma, self.d = sigma, d
+        self.d = d
+    def __call__(self, mean):
+        with torch.no_grad():
+            self.X = self.proj(torch.randn((1, 1, self.d), device=device)*self.sigma + torch.reshape(mean, (1, 1, self.d)))
         return self.X
         

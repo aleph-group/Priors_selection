@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from utils import device
 from prior_comparison import DegradedLikelihood
-from sampling import SKROCK
+from sampling import SKROCK, GaussianDiag
 fig_folder = 'figs_tests'
 import sys
 import os
@@ -17,7 +17,7 @@ test_case = int(sys.argv[1])
 
 ########
 
-#1. Convergence speed 
+# 1. Convergence speed 
 
 if test_case == 0 or test_case == 1:
     # plot the error to the true value of $p(y^+/y^-)$ in function of the number of iterations for different alphas and dimensions
@@ -27,51 +27,194 @@ if test_case == 0 or test_case == 1:
     torch.manual_seed(0)
     np.random.seed(0)
     sigmax, sigma = 1., 0.05
-    nval, ndim = 5, 5  # test nval alphas, with ndim dimensions
-    alphas = torch.linspace(0.1, 0.9, nval, device=device)
-    dims = torch.logspace(1, 4, ndim, dtype=torch.int, device=device)
-    hist = np.zeros([nval, ndim])
-    hist_exact = np.zeros([nval, ndim])  # using exact p(x/y-)
-    nb_steps, burnin_ratio = 300000, 0.001
-    burnin_ratio = 0.001 if test_case == 0 else 0
+    nval = 3    # test nval alphas, with ndim dimensions
+    ntry = 50
+    alphas = torch.linspace(0.25, 0.75, nval, device=device)
+    dims = torch.tensor([10, 100, 1000], device=device)
+    ndim = len(dims)
+    nb_steps = 500000
+    burnin_ratio = 0.002 if test_case == 0 else 0
     nb_steps_sampler = int(nb_steps/(1-burnin_ratio)) if test_case == 0 else nb_steps
-    evidences2 = np.zeros([nval, ndim])  # using p(y+/y-)
-    lik_traces = np.zeros((nval, ndim, nb_steps))  # list of lists (nval, ndim)    
+    evidences2 = np.zeros([nval, ndim, ntry])  # using p(y+/y-)
+    lik_traces = np.zeros((nval, ndim, ntry, nb_steps))  # list of lists (nval, ndim)    
+    np.save(os.path.join(save_folder, "alphas.npy"), alphas.cpu().numpy())
+    np.save(os.path.join(save_folder, "dims.npy"), dims.cpu().numpy())
+    # generate measurements
+    ys, xs, ps, noises = [], [], [], []
+    for i in range(ndim):
+        y, x, p = generate_measurements_gaussian_diag(dims[i], sigmax, sigma)
+        ys.append(y.float().to(device)), xs.append(x.float().to(device)), ps.append(p)
+        noises.append(torch.randn([1, 1, dims[i], ntry], device=device)*sigma)
+
+    for l in range(ndim):
+        d = dims[l]
+        print("------ d={}".format(d))
+        y, x, p = ys[l], xs[l], ps[l]
+        g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), torch.ones(d, device=device)/sigmax**2)
+
+        for i in range(nval):
+            torch.manual_seed(1)
+
+            alpha = alphas[i]
+            L_f = 1 / (sigma**2 / (1-alpha) )  
+            L_g = d / sigmax**2
+            gamma = 0.98*1/(L_f + L_g)          
+            for t in range(ntry):
+                print("------- t={}/{}".format(t, ntry-1))
+                noise = noises[l][:, :, :, t]
+                
+                if test_case == 0:
+                    dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
+                                            sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=None, project=None, alpha=alpha)
+                else:
+                    dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(),sampler=GaussianDiag, noise=noise,
+                                    sampler_kwargs={'d':torch.tensor(d).to(device), 'sigma':torch.tensor(sigma*sigmax / np.sqrt(sigma**2+alpha*sigmax**2)).to(device)},
+                                    lam_reg=None, project=None, alpha=alpha, sigmax=sigmax)
+                # use a sampler 
+                lik_trace, lik_mean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)        
+            
+                lik_traces[i, l, t] =  - (torch.logcumsumexp(lik_trace, 0) + 0.5 * dl.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) + dl.dimx * torch.log(dl.f_add.sigma) + torch.log(torch.arange(1, nb_steps+1, device=device))).cpu().numpy()
+                new_ev = compute_test_gaussian_diag(d, sigmax, sigma, alpha.item(), y.cpu().numpy(), yp=dl.y_add.cpu().numpy(), ym=dl.y_sub.cpu().numpy(), mlog=True).cpu().numpy()
+
+                evidences2[i, l, t] = new_ev
+                print("p(y+/y-) sampler: {}\n exact: {}".format(-lik_mean, new_ev))
+
+        np.save(os.path.join(save_folder, file_name), lik_traces)
+        np.save(os.path.join(save_folder, "test_exact.npy"), evidences2)
+
+if test_case == 2 or test_case == 3:
+    # plot the relative error in function of dimension at a fixed alpha and number of iterations
+    # 2 : skrock for sampling post, 3: analytical post
+    save_folder = os.path.join(fig_folder, "convergence_speed")
+    file_name = "skrock_trace2.npy" if test_case == 2 else "analytical_post2.npy"
+    torch.manual_seed(0)
+    np.random.seed(0)
+    sigmax, sigma = 1., 0.05
+    alpha = torch.tensor(0.5, device=device)
+    ndim = 10
+    dims = torch.logspace(1, 4, ndim, device=device, dtype=torch.int)
+    nb_steps = 20000
+    burnin_ratio = 0.05 if test_case == 2 else 0
+    nb_steps_sampler = int(nb_steps/(1-burnin_ratio)) if test_case == 2 else nb_steps
+    evidences2 = np.zeros([ndim])  # using p(y+/y-)
+    lik_traces = np.zeros((ndim, nb_steps))  # list of lists (nval, ndim)
+    np.save(os.path.join(save_folder, "alpha2.npy"), alpha)
+    np.save(os.path.join(save_folder, "dims2.npy"), dims.cpu().numpy())
     # generate measurements
     ys, xs, ps, noises = [], [], [], []
     for i in range(ndim):
         y, x, p = generate_measurements_gaussian_diag(dims[i], sigmax, sigma)
         ys.append(y.float().to(device)), xs.append(x.float().to(device)), ps.append(p)
         noises.append(torch.randn([1, 1, dims[i]], device=device)*sigma)
-
     for l in range(ndim):
         d = dims[l]
         print("d={}".format(d))
         y, x, p, noise = ys[l], xs[l], ps[l], noises[l]
         g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), torch.ones(d, device=device)/sigmax**2)
 
-        evidences[l] = compute_evidence_gaussian_diag(d, sigmax, sigma, y.cpu().numpy(), mlog=True)
+        L_f = 1 / (sigma**2 / (1-alpha) )  
+        L_g = d / sigmax**2
+        gamma = 0.98*1/(L_f + L_g)
+        torch.manual_seed(1)
+        if test_case == 2:
+            dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
+                                    sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=None, project=None, alpha=alpha)
+        else:
+            dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(),sampler=GaussianDiag, noise=noise,
+                            sampler_kwargs={'d':torch.tensor(d).to(device), 'sigma':torch.tensor(sigma*sigmax / np.sqrt(sigma**2+alpha*sigmax**2)).to(device)},
+                            lam_reg=None, project=None, alpha=alpha, sigmax=sigmax)
+        # use a sampler 
+        lik_trace, lik_mean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)        
+       
+        lik_traces[l] =  - torch.logcumsumexp(lik_trace[:nb_steps], 0) + 0.5 * dl.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) + dl.dimx * torch.log(dl.f_add.sigma) + torch.log(torch.arange(1, nb_steps+1, device=device))
+        evidences2[l] = compute_test_gaussian_diag(dims[l], sigmax, sigma, alpha.item(), y.cpu().numpy(), yp=dl.y_add.cpu().numpy(), ym=dl.y_sub.cpu().numpy(), mlog=True)
+
+        print("p(y+/y-) sampler: {}\n exact: {}".format(-lik_mean, evidences2[l]))
+        np.save(os.path.join(save_folder, file_name), lik_traces)
+        np.save(os.path.join(save_folder, "test_exact2.npy"), evidences2)
+
+if test_case == 4: 
+    # Model misspecification : plot p(y+/y-, sigma)/p(y+/y-, sigma_true) in function of sigma for different alpha, smooth over 50 tries
+    save_folder = os.path.join(fig_folder, "accuracy")
+    
+    np.random.seed(0)
+    torch.manual_seed(0)
+    nsigma = 50  # test nval dimensions, with ntry noise samples
+    ntry = 50
+    d = 5000
+    alphas = torch.tensor([0.25, 0.5, 0.75]).to(device)
+    nval = len(alphas)
+    evidences2 = np.zeros([nval, nsigma, ntry])  # using p(y+/y-)
+    sigmax_ex, sigma = 1., 0.05
+    y, x, p = generate_measurements_gaussian_diag(d, sigmax_ex, sigma)
+    noises = torch.randn([ntry, 1, 1, d], device=device)*sigma
+    sigmaxs = torch.linspace(0.25, 2., nsigma)
+
+    nb_steps, burnin_ratio = 20000, 0.05
+    nb_steps_sampler = int(nb_steps/(1-burnin_ratio))
+    
+    exact_vals = np.zeros([nval, ntry])
+    approx_vals = np.zeros([nval, nsigma, ntry])
+    approx_val_true = np.zeros([nval, ntry])
+    with torch.no_grad():
         for i in range(nval):
             alpha = alphas[i]
-            L_f = 1 / (sigma**2 / (1-alpha) )  
-            L_g = d / sigmax**2
-            gamma = 0.98*1/(L_f + L_g)
-            torch.manual_seed(1)
-            if test_case == 0:
+            
+            for k in range(ntry):
+                print("------- k={}/{}".format(k, ntry-1))
+                noise = noises[k]
+                # start with exact sigma
+                L_f = 1 / (sigma**2 / (1-alpha) )  
+                L_g = d / sigmax_ex**2
+                gamma = torch.tensor(0.98*1/(L_f + L_g), device=device, dtype=torch.float32)
+                g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), torch.ones(d, device=device)/sigmax_ex**2)
+                # use SKROCK and MC
                 dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
+                                        sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=None, project=None, alpha=alpha)   
+                lik_trace, lik_mean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)
+            
+                approx_val_true[i, k] = - lik_mean
+
+                # true sigma, exact value
+                exact_vals[i, k] = compute_test_gaussian_diag(d, sigmax_ex, sigma, alpha.cpu(), y.cpu().numpy(), yp=dl.y_add.cpu().numpy(), ym=dl.y_sub.cpu().numpy(), mlog=True)
+
+                for l in range(nsigma):
+                   
+                    new_sigmax = sigmaxs[l]
+                    L_g = d / new_sigmax**2
+                    gamma = 0.98*1/(L_f + L_g)
+
+                    g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), torch.ones(d, device=device)/new_sigmax**2)
+                
+                    dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
                                         sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=None, project=None, alpha=alpha)
-            else:
-                dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(),sampler=GaussianDiag, noise=noise,
-                                sampler_kwargs={'d':torch.tensor(d).to(device), 'sigma':torch.tensor(sigma*sigmax / np.sqrt(sigma**2+alpha*sigmax**2)).to(device)},
-                                lam_reg=None, project=None, alpha=alpha, sigmax=sigmax)
-            # use a sampler 
-            lik_trace, lik_mean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)        
+                    lik_trace, lik_mean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)
+                    approx_vals[i, l, k] = - lik_mean
+                    # compute exact p(y+/y-)
+                    evidences2[i, l, k] = compute_test_gaussian_diag(d, new_sigmax, sigma, alpha.cpu(), y.cpu().numpy(), yp=dl.y_add.cpu().numpy(), ym=dl.y_sub.cpu().numpy(), mlog=True)
+                    
+    
+    evidences2 = np.cumsum(evidences2, axis=-1)
+    evidences2 /= np.arange(1, ntry+1)[None, None, :]
+    exact_vals = np.cumsum(exact_vals, axis=-1)
+    exact_vals /= np.arange(1, ntry+1)[None, :]
 
-            lik_traces[i, l] = lik_trace
-            hist[i, l] = -lik_mean
+    approx_vals = np.cumsum(approx_vals, axis=-1)
+    approx_vals /= np.arange(1, ntry+1)[None, None, :]
+    approx_val_true = np.cumsum(approx_val_true, axis=-1)
+    approx_val_true /= np.arange(1, ntry+1)[None, :]    
 
-            evidences2[i, l] = compute_test_gaussian_diag(d, sigmax, sigma, alpha.item(), y.cpu().numpy(), yp=dl.y_add.cpu().numpy(), ym=dl.y_sub.cpu().numpy(), mlog=True)
+    approx_vals = approx_vals -  approx_val_true[:, None, :]  # log ratio
+    evidences2 = evidences2 - exact_vals[:, None, :]
 
-            print("p(y+/y-) sampler: {}\n exact: {}".format(hist[i, l], evidences2[i, l]))
-            np.save(os.path.join(save_folder, file_name), lik_trace)
-            np.save(os.path.join(save_folder, "test_exact.npy"), evidences2)
+    np.save(os.path.join(save_folder,  "approx_ratio_gaussian.npy"), approx_vals)
+    np.save(os.path.join(save_folder, "exact_ratio_gaussian.npy"), evidences2)
+    np.save(os.path.join(save_folder, "sigmas.npy"), sigmaxs.cpu().numpy()) 
+    np.save(os.path.join(save_folder, "alphas.npy"), alphas.cpu().numpy())
+    np.save(os.path.join(save_folder, "exact_vals.npy"), exact_vals)
+    np.save(os.path.join(save_folder, "approx_vals.npy"), approx_val_true)
+
+
+if test_case == 5:
+    # Laplace deblurring test case : plot p(y+/y-) in function of the regularization strength for different alphas
+    pass

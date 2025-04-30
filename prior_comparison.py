@@ -77,17 +77,16 @@ class DegradedLikelihood:
             with torch.no_grad():
                 for _ in range(thinning):
                     self.sampler(self.factor(self.y_sub))
-                n = torch.tensor(n, device=device)
                 lik1 = - self.f_add(self.sampler.X, self.y_add)
                 lik_trace[n] = lik1             
                 if log_stats:
                     X_post_trace[n] =  torch.flatten(self.sampler.X).detach()
                     post_hist[n] = lik1 + self.prior(self.sampler.X)             
 
-        lik1_mean = torch.logsumexp(lik_trace[:n+1], 0) - torch.log(n + 1)
+        n_rem = torch.tensor(n_rem, device=device)
+        lik1_mean = torch.logsumexp(lik_trace, 0) - torch.log(n_rem)
         if normalize:
             lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma) 
-            lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma) 
         if log_stats:
             return X_post_trace[:n+1].cpu(), post_hist[:n+1].cpu(), lik_trace[:n+1].cpu(), lik1_mean.item()
         else:

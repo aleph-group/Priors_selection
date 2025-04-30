@@ -146,7 +146,7 @@ class WeightedTikhonovPrior(ParametrizedPrior):  # coded for flat vectors
 class DiagonalWeightedTikhonovPrior(ParametrizedPrior):  # coded for flat vectors
     def __init__(self, param, mat):
         super().__init__(param)
-        self.weights = mat.clone().detach().to(device)  # d, d matrix
+        self.weights = torch.reshape(mat, (-1, 1)).clone().detach().to(device)  # d, d matrix
         
     def grad(self, x, lam_reg):
         return torch.reshape(self.weights * torch.reshape(x, (-1, 1)), (1, 1, -1)) * self.param

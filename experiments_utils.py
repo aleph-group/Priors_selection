@@ -15,6 +15,16 @@ def generate_measurements_gaussian_diag(d, sigmax, sigma):
     y = p(x) + torch.tensor(sigma*np.random.normal(size=d)).to(device)
     return y, x, p
 
+def generate_measurements_laplace(img_size, sigmax, sigma):
+    # apply a gaussian blur
+    x = torch.tensor(np.random.laplace(0., sigmax, [1, 1, img_size, img_size]).astype(np.float32)).to(device)
+    filter_torch = dinv.physics.blur.gaussian_blur(sigma=(0.1, 0.1))
+    p = dinv.physics.Blur(img_size=(1, img_size, img_size), filter=filter_torch,
+                          device=device, padding="circular",
+    noise_model  =dinv.physics.GaussianNoise(sigma=sigma))
+    y = p(x)    
+    return y, x, p
+   
 def compute_evidence_gaussian_diag(d, sigmax, sigma, y, mlog=True):  # sum of X and a gaussian of variance sigma^2, -log () if mlog is True
     res = 0.5*np.sum(y**2)/(sigmax**2 + sigma**2)
     res += 0.5*d*np.log(2*np.pi)  # normalization of likelihood term

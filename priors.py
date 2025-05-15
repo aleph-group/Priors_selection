@@ -32,11 +32,11 @@ class ParametrizedPrior:
 class Likelihood:
     def __init__(self):
         pass
-
-    def __call__(self, x, y):
-        return self.f(x,y)
+        
+    def __call__(self, x, y, dim=None):
+        return self.f(x, y, dim)
     
-    def f(self, x, y):
+    def f(self, x, y, dim=None):
         pass
 
     def grad(self, x, y):
@@ -49,9 +49,9 @@ class L2(Likelihood):
         self.sigma = sigma
         self.p = p
         
-    def f(self, x, y):
-        return 0.5 * torch.sum(torch.square(y - self.p.A(x))) / self.sigma**2
-
+    def f(self, x, y, dim=None):
+        return 0.5 * torch.sum(torch.square(y - self.p.A(x)), dim=dim) / self.sigma**2
+        
     def grad(self, x, y):
         return self.p.A_adjoint(self.p.A(x) - y) / self.sigma**2
 

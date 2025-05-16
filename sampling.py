@@ -73,6 +73,6 @@ class GaussianDiag(Sampler):
         self.d = d
     def __call__(self, mean):
         with torch.no_grad():
-            self.X = self.proj(torch.randn((1, 1, self.d), device=device)*self.sigma + torch.reshape(mean, (1, 1, self.d)))
+            self.X = self.proj(torch.randn((self.X.shape[0], 1, self.d), device=device)*self.sigma + mean)
         return self.X
         

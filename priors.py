@@ -129,33 +129,21 @@ class TikhonovPrior(ParametrizedPrior):
         return self.param
 
 
-class WeightedTikhonovPrior(ParametrizedPrior):  # coded for flat vectors
-    def __init__(self, param, mat):
-        super().__init__(param)
-        self.weights = mat.clone().detach().to(device)  # d, d matrix
-        
-    def grad(self, x, lam_reg):
-        return torch.reshape(self.weights @ torch.reshape(x, (-1, 1)), (1, 1, -1)) * self.param
-
-    def forward(self, x): 
-        return torch.sum(torch.reshape(x, (-1, 1))* self.weights@torch.reshape(x, (-1, 1))) * self.param / 2.
-
-    def grad_param(self, x):
-        return torch.sum(torch.reshape(x, (-1, 1))* self.weights@torch.reshape(x, (-1, 1))) / 2.
-
 class DiagonalWeightedTikhonovPrior(ParametrizedPrior):  # coded for flat vectors
     def __init__(self, param, mat):
         super().__init__(param)
-        self.weights = torch.reshape(mat, (-1, 1)).clone().detach().to(device)  # d, d matrix
+        self.weights = torch.reshape(mat, (1, -1)).clone().detach().to(device)  # d, d matrix
+        self.axis = tuple(range(1, 3))
         
     def grad(self, x, lam_reg):
-        return torch.reshape(self.weights * torch.reshape(x, (-1, 1)), (1, 1, -1)) * self.param
+        return self.weights[None, :, :] * x * self.param
 
     def forward(self, x): 
-        return torch.sum(torch.reshape(torch.square(x), (-1, 1))* self.weights) * self.param / 2.
+        return torch.sum(torch.square(x)* self.weights[None, :, :], self.axis) * self.param / 2.
 
     def grad_param(self, x):
-        return torch.sum(torch.reshape(torch.square(x), (-1, 1))* self.weights) / 2.
+        return torch.sum(torch.square(x)* self.weights[None, :, :], self.axis) / 2.
+    
 
 class L1Prior(ParametrizedPrior):
     def __init__(self, param):

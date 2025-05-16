@@ -42,7 +42,7 @@ class DegradedLikelihood:
         else: 
             X_post = proj(X_init.clone())
             if X_post.shape[0] != batch_size:
-                X_post = X_post.repeat(batch_size, 1, 1, 1)
+                X_post = X_post.repeat(*[batch_size] + [1 for _ in range(X_post.dim()-1)]) 
             
         self.batch_size = batch_size
             
@@ -53,7 +53,7 @@ class DegradedLikelihood:
         else:
             self.y_sub, self.y_add = self.y - noise/self.calpha, self.y + self.calpha*noise
         
-        gradU = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, lam_reg)
+        gradU = lambda t, y: self.f_sub.grad(t, y) + self.prior.grad(t, lam_reg)
         self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
         if sampler == GaussianDiag:   # if x follows a diagonal Gaussian prior
             self.factor = lambda t: self.alpha*t/(self.f.sigma**2+self.alpha*kwargs["sigmax"]**2) 
@@ -77,13 +77,13 @@ class DegradedLikelihood:
             post_hist = torch.zeros(n_rem, device=device)
             X_post_trace = torch.zeros([n_rem, self.dimx], device=device)
         if log_wu:
-            wu_trace = torch.zeros((it_burnin, self.batch_size), device=device)
+            wu_trace = torch.zeros((it_burnin, self.batch_size) + self.sampler.X.shape[1:], device=device)
         
         with torch.no_grad():
             for n in tqdm.tqdm(range(it_burnin)):  # warmup stage
                 self.sampler(self.y_sub)
                 if log_wu:
-                    wu_trace[n] = - self.prior(self.sampler.X) - self.f_sub(self.sampler.X, self.y_sub, dim=axis)
+                    wu_trace[n] = self.sampler.X.clone()
 
         lik1_mean = torch.tensor(0., device=device)
 
@@ -103,7 +103,7 @@ class DegradedLikelihood:
         if normalize:
             lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma) 
 
-        res = lik_trace[:n+1].cpu(), lik1_mean.item() 
+        res = lik_trace.cpu().reshape(-1), lik1_mean.item() 
         if log_stats:
             res =  (X_post_trace.cpu(), post_hist.cpu()) + res 
         if log_wu:

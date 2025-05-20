@@ -1,5 +1,7 @@
 import torch 
 from utils import tcheby, tcheby_der, device
+from deepinv.sampling import DiffPIR  as dinv_DiffPIR 
+from deepinv.optim.data_fidelity import L2
 
 
 class Sampler:
@@ -75,4 +77,17 @@ class GaussianDiag(Sampler):
         with torch.no_grad():
             self.X = self.proj(torch.randn((self.X.shape[0], 1, self.d), device=device)*self.sigma + mean)
         return self.X
+
+
+class DiffPIR(Sampler):
+    def __init__(self, gradU, gamma, X_init, proj, y,
+                 physics, denoiser, verbose=False, batch_size=1, max_iter=500):
+        super().__init__(None, None, X_init, proj)
+        self.model = dinv_DiffPIR(data_fidelity=L2(), model=denoiser, device=device, 
+                                  verbose=verbose, max_iter=max_iter)
+        self.p = physics
+        self.y = y.repeat(batch_size, 1, 1, 1)
+        
+    def __call__(self, *args, **kwargs):
+        return self.model(self.y, self.p)
         

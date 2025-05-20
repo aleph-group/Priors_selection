@@ -379,54 +379,56 @@ if test_case == 6:
 
 
 if test_case == 7:
-    # model misspecification : plot p(y+/y-, kernel)/p(y+/y-, kernel_true) as a function of the kernel's sigma for different alpha, laplace prior
+    # model misspecification : plot p(y+/y-, kernel)/p(y+/y-, kernel_true) as a function of the kernel's sigma for different alpha, using the gradient step denoiser associated prior
     img_size = 128
-    np.random.seed(6)
-    torch.manual_seed(6)
+    np.random.seed(test_case)
+    torch.manual_seed(test_case)
     save_folder = os.path.join(fig_folder, "accuracy")
     sigma =  0.1
-    sigmax_ex = 0.5
+    sigmax_ex = 1
     y, x, p = generate_measurements_natural(img_size, sigma)
     noise = torch.randn([1, 1, img_size, img_size], device=device)*sigma
 
-    nsigmas = 40
-    sigmaxs = torch.linspace(0.01, 10., nsigmas)
+    nsigmas = 7
+    sigmaxs = np.array([0.01, 0.25, .5, 0.75, 1.25, 1.5, 1.75])#torch.linspace(0.01, 10., nsigmas)
 
     alphas = torch.tensor([0.25, 0.5, 0.75]).to(device)
     nval = len(alphas)
     
-    nb_steps, burnin_ratio = 20000, 0.05
-    nb_steps_sampler = int(nb_steps/(1-burnin_ratio))
-
+    nb_steps, burnin_ratio = 20000, 5000
+    batch_size = 2
+    
     approx_vals = np.zeros([nval, nsigmas])
     approx_vals_gt = np.zeros([nval])
     path_ckpt = "GSDRUNet_grayscale_torch.ckpt" 
     denoiser = dinv.models.GSDRUNet(pretrained=path_ckpt, in_channels=1, out_channels=1, device=device)
     g = GSDPrior(torch.tensor(110.), denoiser)
-
+    trace_exact = np.zeros([nval, nb_steps])
+    thinning = 1
     for i in range(nval):
 
         alpha = alphas[i]
         for l in range(nsigmas):
             print("------- l={}/{}".format(l, nsigmas-1), "alpha={}".format(alpha))
             new_sigmax = sigmaxs[l]
-            L_f = 1 / (sigma**2 / (1-alpha) )  
+            L_f = 1 / (sigma**2 / alpha)  
             L_g = 2
 
             gamma = 0.98*1/(L_f + L_g)
             p = generate_blur_operator(img_size, sigma=sigma, sigma_blur=new_sigmax)
             dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
-                                    sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=lam_reg, project=None, alpha=alpha)
-            # compute exact p(y+/y-)
-            _, lmean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)
+                                    sampler=SKROCK,sampler_kwargs={'s':15}, project=None, alpha=alpha, batch_size=batch_size)
+            _, lmean = dl.compute_test(nb_steps, burnin_ratio=burnin_ratio, log_stats=False, thinning=thinning, normalize=True, log_wu=False)
             approx_vals[i, l] = - lmean
         p = generate_blur_operator(img_size, sigma=sigma, sigma_blur=sigmax_ex)
         dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
-                                sampler=SKROCK,sampler_kwargs={'s':15}, lam_reg=lam_reg, project=None, alpha=alpha)
-        _, lmean = dl.compute_test(nb_steps_sampler, burnin_ratio=burnin_ratio, log_stats=False, thinning=1, normalize=True)
+                                sampler=SKROCK,sampler_kwargs={'s':15}, project=None, alpha=alpha, batch_size=batch_size)
+        trace, lmean = dl.compute_test(nb_steps, burnin_ratio=burnin_ratio, log_stats=False, thinning=thinning, normalize=True)
         approx_vals_gt[i] = - lmean
+        trace_exact[i] = trace.cpu()
 
-    np.save(os.path.join(save_folder, "approx_nat.npy"), approx_vals)
-    np.save(os.path.join(save_folder, "sigmas_nat.npy"), sigmaxs.cpu().numpy())
-    np.save(os.path.join(save_folder, "alphas_nat.npy"), alphas.cpu().numpy())
-    np.save(os.path.join(save_folder, "gt_vals_nat.npy"), approx_vals_gt)
+    np.save(os.path.join(save_folder, "approx_nat2.npy"), approx_vals)
+    np.save(os.path.join(save_folder, "trace_exact_nat2.npy"), trace_exact)
+    np.save(os.path.join(save_folder, "sigmas_nat2.npy"), sigmaxs)
+    np.save(os.path.join(save_folder, "alphas_nat2.npy"), alphas.cpu().numpy())
+    np.save(os.path.join(save_folder, "gt_vals_nat2.npy"), approx_vals_gt)

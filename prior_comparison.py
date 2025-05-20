@@ -2,7 +2,7 @@ import torch
 from priors import L2
 import tqdm
 from utils import device
-from sampling import ULA, GaussianDiag
+from sampling import ULA, GaussianDiag, DiffPIR
 
 
 class DegradedLikelihood:
@@ -54,11 +54,16 @@ class DegradedLikelihood:
             self.y_sub, self.y_add = self.y - noise/self.calpha, self.y + self.calpha*noise
         
         gradU = lambda t, y: self.f_sub.grad(t, y) + self.prior.grad(t, lam_reg)
-        self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
         if sampler == GaussianDiag:   # if x follows a diagonal Gaussian prior
             self.factor = lambda t: self.alpha*t/(self.f.sigma**2+self.alpha*kwargs["sigmax"]**2) 
         else:
             self.factor = lambda t: t
+
+        if sampler == DiffPIR:
+            sampler_kwargs['y'] = self.y_sub
+            sampler_kwargs['physics'].noise_model.update_parameters(sigma / torch.sqrt(self.alpha))
+        self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
+
 
     def _add_noise(self):
         noise = torch.randn_like(self.y, device=device)*self.f.sigma

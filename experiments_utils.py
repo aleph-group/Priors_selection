@@ -18,32 +18,34 @@ def generate_measurements_gaussian_diag(d, sigmax, sigma):
     return y, x, p
 
 
-def generate_measurements_laplace(img_size, sigmax, sigma, sigma_blur=0.1):
+def generate_measurements_laplace(img_size, sigmax, sigma, sigma_blur=0.1, dtype=np.float32):
     # apply a gaussian blur
-    x = torch.tensor(np.random.laplace(0., sigmax, [1, 1, img_size, img_size]).astype(np.float32)).to(device)
-    p = generate_blur_operator(img_size, sigma_blur=sigma_blur, sigma=sigma)
+    x = torch.tensor(np.random.laplace(0., sigmax, [1, 1, img_size, img_size]).astype(dtype)).to(device)
+    p = generate_blur_operator(img_size, sigma_blur=sigma_blur, sigma=sigma, dtype=dtype)
     y = p(x)    
     return y, x, p
    
 
-def generate_blur_operator(img_size, sigma, sigma_blur=0.1):
-    filter_torch = dinv.physics.blur.gaussian_blur(sigma=(sigma_blur, sigma_blur))
-    p = dinv.physics.Blur(img_size=(1, img_size, img_size), filter=filter_torch,
-                          device=device, padding="circular",
-                          noise_model=dinv.physics.GaussianNoise(sigma=sigma))
-    return p
+def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1, dtype=torch.float32):
+    filter_torch = dinv.physics.blur.gaussian_blur(sigma=(sigma_blur, sigma_blur)).to(device)
+ 
+    return generate_blur_operator(img_size, filter_torch, sigma)
 
 
-def generate_measurements_natural(img_size, sigma, sigma_blur=0.1):
+def generate_blur_operator(img_size, filter_torch, sigma):
+    return dinv.physics.Blur(img_size=(1, img_size, img_size), filter=filter_torch, device=device, padding="circular",
+                             noise_model=dinv.physics.GaussianNoise(sigma=sigma))
+    
+
+def generate_measurements_natural(img_size, sigma, sigma_blur=0.1, im_ind=0):
     dataset_name = "set3c"
     val_transform = transforms.Compose([transforms.CenterCrop(img_size), transforms.ToTensor()])
 
     dataset = load_dataset("set3c", transform=val_transform)
-    im_ind = 0
     x = dataset[im_ind][0].unsqueeze(0).to(device)
     deco = dinv.physics.Decolorize(device=device)
     x = deco(x)
-    p = generate_blur_operator(img_size, sigma_blur=sigma_blur, sigma=sigma)
+    p = generate_gaussian_blur_operator(img_size, sigma_blur=sigma_blur, sigma=sigma)
     y = p(x) 
     return y, x, p
 

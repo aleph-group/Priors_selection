@@ -1,6 +1,7 @@
 import arviz 
 import numpy as np
 import torch
+import json 
 
 device =  torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -48,3 +49,60 @@ def tcheby_der(x, n):
         return n * torch.sinh(n * torch.acosh(-x)) / torch.sqrt(x**2 - 1) * (-1)**(n+1)
     else:
         return n * torch.sin(n * torch.acos(x)) / torch.sqrt(1 - x**2)
+
+
+def moffat(alpha=(1., 1)):
+    c = int(2*(alpha[1]/alpha[0]**2*(2**(1/(alpha[1]/2+1))-1))**0.5)
+    k_size = 2 * c + 1
+
+    delta = torch.arange(k_size)
+    x, y = torch.meshgrid(delta, delta, indexing="ij")
+    x = x - c
+    y = y - c
+    filt = alpha[0]**2*(x**2 + y**2)/alpha[1] +  1 
+    filt = filt.pow(-(alpha[1]/2 + 1)) * alpha[0]**2 / 2 / torch.pi
+    filt = filt / filt.flatten().sum()
+
+    return filt.unsqueeze(0).unsqueeze(0)
+    
+
+def laplace(alpha):
+    c = int(3*np.log(2.)/alpha + 1)
+    k_size = 2 * c + 1
+
+    delta = torch.arange(k_size)
+    x, y = torch.meshgrid(delta, delta, indexing="ij")
+    x = x - c
+    y = y - c
+    filt = torch.exp(-alpha*(torch.abs(x) + torch.abs(y)))*alpha**2/4
+    filt = filt / filt.flatten().sum()
+
+    return filt.unsqueeze(0).unsqueeze(0)
+    
+
+def uniform(size=5):
+    k_size = 2 * size + 1
+    filt = torch.ones((k_size, k_size))
+    filt = filt / filt.flatten().sum()
+
+    return filt.unsqueeze(0).unsqueeze(0)
+
+
+def dict_to_json(dico, path):
+    dd = dico.copy()
+    for key in dd:
+        dd[key] =  dd[key].tolist() if type(dd[key]) == np.ndarray else dd[key]
+    fd = open(path, 'w')
+    json.dump(dd, fd)
+    fd.close()
+
+
+def json_to_dict(path):
+    fd = open(path, 'r')
+    dd = json.load(fd)
+    fd.close()
+
+    for key in dd:
+        dd[key] =  np.array(dd[key]) if type(dd[key]) == list else dd[key]
+    return dd
+    

@@ -4,6 +4,7 @@ from utils import device
 import deepinv as dinv
 from torchvision import transforms
 from deepinv.utils.demo import load_dataset
+from torchvision.datasets import ImageFolder
 
 
 def generate_measurements_gaussian_diag(d, sigmax, sigma):
@@ -33,14 +34,13 @@ def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1, dtype=torch
 
 
 def generate_blur_operator(img_size, filter_torch, sigma):
-    return dinv.physics.Blur(img_size=(1, img_size, img_size), filter=filter_torch, device=device, padding="circular",
+    return dinv.physics.BlurFFT(img_size=(1, img_size, img_size), filter=filter_torch, device=device, padding="circular",
                              noise_model=dinv.physics.GaussianNoise(sigma=sigma))
     
 
 def generate_measurements_natural(img_size, sigma, sigma_blur=0.1, im_ind=0):
     dataset_name = "set3c"
     val_transform = transforms.Compose([transforms.CenterCrop(img_size), transforms.ToTensor()])
-
     dataset = load_dataset("set3c", transform=val_transform)
     x = dataset[im_ind][0].unsqueeze(0).to(device)
     deco = dinv.physics.Decolorize(device=device)

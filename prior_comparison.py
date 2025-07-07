@@ -2,6 +2,7 @@ import torch
 from priors import L2
 import tqdm
 from utils import device
+import deepinv as dinv
 from sampling import ULA, GaussianDiag, DiffPIR
 import numpy as np
 
@@ -60,7 +61,6 @@ class DegradedLikelihood:
             sampler_kwargs['physics'].noise_model.update_parameters(sigma / torch.sqrt(self.alpha))
         self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
 
-
     def _add_noise(self, noise=None):
         if noise is None:
             noise = torch.randn_like(self.y, device=device)*self.f.sigma
@@ -71,7 +71,7 @@ class DegradedLikelihood:
         n_rem = nb_steps - it_burnin if burnin_ratio < 1 else nb_steps
         return it_burnin, n_rem
 
-    def compute_test(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=1, normalize=False, log_wu=False, 
+    def compute_test(self, nb_steps, log_stats=False, burnin_ratio=0.25, thinning=1, normalize=False,
                      logsum=True):
         """Compute log p(y+/y-) or E_x/y-(log p(y+/x)) using MC for a fixed iteration of noise."""
         it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
@@ -83,14 +83,10 @@ class DegradedLikelihood:
         if log_stats:
             post_hist = torch.zeros(n_rem, device=device)
             X_post_trace = torch.zeros([n_rem, self.dimx], device=device)
-        if log_wu:
-            wu_trace = torch.zeros((it_burnin, self.batch_size) + self.sampler.X.shape[1:], device=device)
-        
+
         with torch.no_grad():
             for n in tqdm.tqdm(range(it_burnin)):  # warmup stage
                 self.sampler(self.y_sub)
-                if log_wu:
-                    wu_trace[n] = self.sampler.X.clone()
 
         trange = tqdm.tqdm(range(n_rem), mininterval=1)
         with torch.no_grad():
@@ -116,40 +112,46 @@ class DegradedLikelihood:
         res = lik_trace.cpu().reshape(-1), lik1_mean.item() 
         if log_stats:
             res =  (X_post_trace.cpu(), post_hist.cpu()) + res 
-        if log_wu:
-            res = (wu_trace.cpu(),) + res
+
             
         return res
     
 
     def compute_test2(self, nb_steps, nb_noise, burnin_ratio=0.25, thinning=10, thinning_noise=0, normalize=False, 
-                      log_post=False, logsum=True, noise_schedule=None, verbose=1):
+                      log_post=False, logsum=True, noise_schedule=None, x=None, verbose=1):
         """Compute log E_eps(p(y+/y-)) or E_eps,x/y-(log p(y+/x)) using MC (average over noise and x/y-)."""
         it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
-        
-        n_rem = n_rem // self.batch_size
 
+        nb_batches = nb_noise//self.batch_size
         if noise_schedule is None:
-            noise_schedule = torch.randn((nb_noise,) + self.y.shape, device=device)*self.f.sigma
+            noise_schedule = torch.randn((nb_batches, self.batch_size) + self.y.shape[1:], device=device)*self.f.sigma
         else: 
-            assert len(noise_schedule) == nb_noise, "invalid shape {} for noise schedule".format(noise_schedule.shape)
+            assert (noise_schedule.shape[0], noise_schedule.shape[1]) == (nb_batches, self.batch_size), \
+                    "invalid shape {} for noise schedule".format(noise_schedule.shape)
+            
         self._add_noise(noise_schedule[0])
-        lik_trace = torch.zeros((nb_noise, self.batch_size, n_rem), device=device)
+        lik_trace = torch.zeros((nb_batches, self.batch_size, n_rem), device=device)
+        post_mean = torch.zeros_like(self.y)
+        if x is not None:
+            psnr_trace = torch.zeros((nb_batches, n_rem), device=device)
+            psnr = dinv.loss.metric.PSNR()
+             
         if log_post:
-            X_trace = torch.zeros((nb_noise, self.batch_size, n_rem, self.dimx)).cpu()
+            X_trace = torch.zeros((nb_batches, self.batch_size, n_rem, self.dimx)).cpu()
         axis = tuple(range(1, self.sampler.X.dim()))
 
         trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
+
         with torch.no_grad():
             for n in trange:  # warmup stage
                 self.sampler(self.y_sub)
                 
-        trange = tqdm.tqdm(range(nb_noise)) if verbose >= 1 else range(nb_noise)
+        trange = tqdm.tqdm(range(nb_batches)) if verbose >= 1 else range(nb_noise)
         trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
         with torch.no_grad():
             for t in trange:
+                nit_global = t*self.batch_size*n_rem
                 self._add_noise(noise_schedule[t])
-
                 for _ in range(thinning_noise):
                     self.sampler(self.y_sub)
 
@@ -157,21 +159,28 @@ class DegradedLikelihood:
                     for _ in range(thinning):
                         self.sampler(self.factor(self.y_sub))
                     lik1 = - self.f_add(self.sampler.X, self.y_add, dim=axis)
-                    lik_trace[t, :, n] = lik1                   
+                    lik_trace[t, :, n] = lik1
+                    post_mean_loc = torch.mean(self.sampler.X, axis=0)*self.batch_size
+                    nit_loc = n*self.batch_size
+                    post_mean = (post_mean*(nit_global + nit_loc) + post_mean_loc)/(nit_global + nit_loc + self.batch_size)
                     if log_post:
                         X_trace[t, :, n] = self.sampler.X.reshape([self.batch_size, -1]).cpu()
+                    if x is not None:
+                        psnr_trace[t, n] = psnr(x, post_mean)
                 
         n_rem = torch.tensor(n_rem*nb_noise, device=device)
         if logsum:
-            lik1_mean = torch.logsumexp(lik_trace, (0, 1, 2)) - torch.log(n_rem*self.batch_size)
+            lik1_mean = torch.logsumexp(lik_trace, (0, 1, 2)) - torch.log(n_rem)
         else:
             lik1_mean = torch.mean(lik_trace, (0, 1, 2))
         if normalize:
             lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma) 
             lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
 
-        res = lik_trace.cpu().reshape((nb_noise, -1)), lik1_mean.item() 
+        res = lik_trace.cpu().reshape((nb_noise, -1)), lik1_mean.item(), post_mean.cpu()
         if log_post:
             res = res + (X_trace.cpu(),)
+        if x is not None:
+            res = res + (psnr_trace.cpu(),)
         return res
 

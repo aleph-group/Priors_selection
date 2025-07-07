@@ -80,11 +80,11 @@ class GaussianDiag(Sampler):
 
 
 class DiffPIR(Sampler):
-    def __init__(self, gradU, gamma, X_init, proj,
-                 physics, denoiser, verbose=False, batch_size=1, max_iter=500):
+    def __init__(self, gradU, gamma, X_init, proj, physics, denoiser, verbose=False, 
+                 batch_size=1, max_iter=500, lambda_=7.):
         super().__init__(None, None, X_init, proj)
         self.model = dinv_DiffPIR(data_fidelity=L2(), model=denoiser, device=device, 
-                                  verbose=verbose, max_iter=max_iter)
+                                  verbose=verbose, max_iter=max_iter, lambda_=lambda_)
         self.p = physics
         self.batch_size = batch_size
         

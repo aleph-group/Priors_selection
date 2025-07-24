@@ -6,6 +6,7 @@ import deepinv as dinv
 from sampling import ULA, GaussianDiag, DiffPIR
 import numpy as np
 
+
 class DegradedLikelihood:
     def __init__(self, y, prior, physics, sigma, gamma, sampler=ULA, sampler_kwargs={}, batch_size=1,
                  X_init=None, lam_reg=None, project='clamp', noise=None, alpha=0.5, **kwargs):
@@ -57,6 +58,7 @@ class DegradedLikelihood:
         else:
             self.factor = lambda t: t
 
+        self.physics = physics
         if sampler == DiffPIR:
             sampler_kwargs['physics'].noise_model.update_parameters(sigma / torch.sqrt(self.alpha))
         self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
@@ -131,6 +133,7 @@ class DegradedLikelihood:
             
         self._add_noise(noise_schedule[0])
         lik_trace = torch.zeros((nb_batches, self.batch_size, n_rem), device=device)
+
         post_mean = torch.zeros_like(self.y)
         if x is not None:
             psnr_trace = torch.zeros((nb_batches, n_rem), device=device)
@@ -145,7 +148,7 @@ class DegradedLikelihood:
         with torch.no_grad():
             for n in trange:  # warmup stage
                 self.sampler(self.y_sub)
-                
+
         trange = tqdm.tqdm(range(nb_batches)) if verbose >= 1 else range(nb_noise)
         trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
         with torch.no_grad():
@@ -162,9 +165,11 @@ class DegradedLikelihood:
                     lik_trace[t, :, n] = lik1
                     post_mean_loc = torch.mean(self.sampler.X, axis=0)*self.batch_size
                     nit_loc = n*self.batch_size
-                    post_mean = (post_mean*(nit_global + nit_loc) + post_mean_loc)/(nit_global + nit_loc + self.batch_size)
+                    post_mean = ((post_mean*(nit_global + nit_loc) + post_mean_loc) /
+                                 (nit_global + nit_loc + self.batch_size))
                     if log_post:
                         X_trace[t, :, n] = self.sampler.X.reshape([self.batch_size, -1]).cpu()
+                        
                     if x is not None:
                         psnr_trace[t, n] = psnr(x, post_mean)
                 
@@ -176,11 +181,98 @@ class DegradedLikelihood:
         if normalize:
             lik1_mean = lik1_mean - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma) 
             lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
-
         res = lik_trace.cpu().reshape((nb_noise, -1)), lik1_mean.item(), post_mean.cpu()
         if log_post:
             res = res + (X_trace.cpu(),)
         if x is not None:
             res = res + (psnr_trace.cpu(),)
+
         return res
 
+    def compute_test3(self, nb_steps, nb_noise, burnin_ratio=0.25, thinning=10, thinning_noise=0, normalize=False, 
+                  noise_schedule=None, x=None, verbose=1):
+        """Compute log E_eps(p(y+/y-)) or E_eps,x/y-(log p(y+/x)) using MC (average over noise and x/y-)."""
+        it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
+
+        nb_batches = nb_noise//self.batch_size
+        if noise_schedule is None:
+            noise_schedule = torch.randn((nb_batches, self.batch_size) + self.y.shape[1:], device=device)*self.f.sigma
+        else: 
+            assert (noise_schedule.shape[0], noise_schedule.shape[1]) == (nb_batches, self.batch_size), \
+                    "invalid shape {} for noise schedule".format(noise_schedule.shape)
+            
+        self._add_noise(noise_schedule[0])
+        lik_trace = torch.zeros((nb_batches, self.batch_size, n_rem), device=device)
+
+        post_mean = torch.zeros_like(self.y)
+        if x is not None:
+            psnr_trace = torch.zeros((nb_batches, n_rem), device=device)
+            psnr = dinv.loss.metric.PSNR()
+             
+        axis = tuple(range(1, self.sampler.X.dim()))
+
+        trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
+
+        with torch.no_grad():
+            for n in trange:  # warmup stage
+                self.sampler(self.y_sub)
+
+        d, dims = np.prod(self.y.shape[1:]), self.y.shape[1:]
+        # used for storing samples at each noise realization
+        loc_trace = torch.zeros((self.batch_size, n_rem, d), device=device)  # (n, D)
+        es_trace = torch.zeros((nb_batches, self.batch_size, n_rem*(n_rem - 1)//2), device=device)  # (nb_noise ) 
+        es_trace2 = torch.zeros((nb_batches, self.batch_size, n_rem*(n_rem - 1)//2), device=device)  # (nb_noise ) 
+
+        trange = tqdm.tqdm(range(nb_batches)) if verbose >= 1 else range(nb_noise)
+        trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
+        with torch.no_grad():
+            for t in trange:
+                nit_global = t*self.batch_size*n_rem
+                
+                self._add_noise(noise_schedule[t])
+                for _ in range(thinning_noise):
+                    self.sampler(self.y_sub)
+
+                for n in trange2:
+                    for _ in range(thinning):
+                        self.sampler(self.factor(self.y_sub))
+                    lik1 = - self.f_add(self.sampler.X.to(torch.float32), self.y_add, dim=axis)
+                    lik_trace[t, :, n] = lik1  # - l2 error (normalized by sigma_add)
+
+                    # update posterior mean
+                    post_mean_loc = torch.mean(self.sampler.X, axis=0)*self.batch_size
+                    nit_loc = n*self.batch_size
+                    post_mean = ((post_mean*(nit_global + nit_loc) + post_mean_loc) /
+                                 (nit_global + nit_loc + self.batch_size))
+                    
+                    # update local trace
+                    loc_trace[:, n] = self.sampler.X.reshape(self.batch_size, -1).clone()
+
+                    if n > 0:  # compute diffs with respect to the previous samples
+                        ind_diag = n*(n-1)//2  # number of diffs already computed
+                        es_trace[t, :, ind_diag:ind_diag+n] = torch.cdist(loc_trace[:, :n, :], # bs, n, d
+                                                                          loc_trace[:, n].view(-1, 1, d)).view(-1, n)
+                        es_trace2[t, :, ind_diag:ind_diag+n] = torch.cdist(self.physics.A(loc_trace[:, :n, :].reshape((n*self.batch_size,) + dims)).view(-1, n, d), 
+                                                                        self.physics.A(loc_trace[:, n].view((-1,) + dims)).view(-1, 1, d)).view(-1, n)
+
+                    if x is not None:
+                        psnr_trace[t, n] = psnr(x, post_mean)
+                
+        n_rem = torch.tensor(n_rem*nb_noise, device=device)
+        
+        if normalize:
+            lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
+            es_trace = es_trace/self.f_add.sigma - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
+            es_trace2 = es_trace2/self.f_add.sigma - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
+        else:
+            lik_trace = - self.f_add.sigma * lik_trace
+    
+        res = (lik_trace.cpu().reshape((nb_noise, -1)), 
+               es_trace.cpu().reshape((nb_noise, -1)), es_trace2.cpu().reshape((nb_noise, -1)),
+               post_mean.cpu(), loc_trace.cpu())
+        
+
+        if x is not None:
+            res = res + (psnr_trace.cpu(),)
+
+        return res

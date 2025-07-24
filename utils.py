@@ -51,8 +51,12 @@ def tcheby_der(x, n):
         return n * torch.sin(n * torch.acos(x)) / torch.sqrt(1 - x**2)
 
 
-def moffat(alpha=(1., 1)):
-    c = int(2*(alpha[1]/alpha[0]**2*(2**(1/(alpha[1]/2+1))-1))**0.5)
+def moffat(alpha=(1., 1), size=None):
+    if size is None:
+        c = int(2*(alpha[1]/alpha[0]**2*(2**(1/(alpha[1]/2+1))-1))**0.5 + 1)
+    else:
+        c = size
+    
     k_size = 2 * c + 1
 
     delta = torch.arange(k_size)
@@ -66,8 +70,11 @@ def moffat(alpha=(1., 1)):
     return filt.unsqueeze(0).unsqueeze(0)
     
 
-def laplace(alpha):
-    c = int(3*np.log(2.)/alpha + 1)
+def laplace(alpha, size=None):
+    if size is None:
+        c = int(0.2/alpha**2 + 1)#int(3*np.log(2.)/alpha + 1)
+    else:
+        c = size
     k_size = 2 * c + 1
 
     delta = torch.arange(k_size)

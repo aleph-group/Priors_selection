@@ -1,4 +1,4 @@
-import deepinv as dinv
+from deepinv.optim.prior import WaveletPrior
 import torch
 from utils import device
 
@@ -100,7 +100,7 @@ class GSDPrior(ParametrizedPrior):
 class WaveletPrior(ParametrizedPrior):
     def __init__(self, param, start=8):
         super().__init__(param)
-        self.dinv_tv = dinv.optim.prior.WaveletPrior(level=3, wv=["db{}".format(i) for i in range(start, 9)], p=1, device=device)
+        self.dinv_tv = WaveletPrior(level=3, wv=["db{}".format(i) for i in range(start, 9)], p=1, device=device)
 
     def grad(self, x, lam_reg):
         return (x - self.dinv_tv.prox(x, self.param*lam_reg)) / lam_reg  

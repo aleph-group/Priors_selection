@@ -2,7 +2,7 @@ import torch
 from priors import L2
 import tqdm
 from utils import device
-import deepinv as dinv
+from deepinv.loss.metric import PSNR
 from sampling import ULA, GaussianDiag, DiffPIR
 import numpy as np
 
@@ -60,9 +60,17 @@ class DegradedLikelihood:
 
         self.physics = physics
         if sampler == DiffPIR:
-            sampler_kwargs['physics'].noise_model.update_parameters(sigma / torch.sqrt(self.alpha))
+            self.diff_flag = True
+            sampler_kwargs['physics'].noise_model.update_parameters(self.f.sigma / torch.sqrt(self.alpha))
+        else:
+            self.diff_flag = False
         self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
 
+    def _update_alpha(self, new_val):
+        self.alpha = new_val
+        self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
+        if self.diff_flag:  # update DIFFPIR noise model
+            self.sampler.p.noise_model.update_parameters(self.f.sigma / torch.sqrt(self.alpha))
     def _add_noise(self, noise=None):
         if noise is None:
             noise = torch.randn_like(self.y, device=device)*self.f.sigma
@@ -137,7 +145,7 @@ class DegradedLikelihood:
         post_mean = torch.zeros_like(self.y)
         if x is not None:
             psnr_trace = torch.zeros((nb_batches, n_rem), device=device)
-            psnr = dinv.loss.metric.PSNR()
+            psnr = PSNR()
              
         if log_post:
             X_trace = torch.zeros((nb_batches, self.batch_size, n_rem, self.dimx)).cpu()
@@ -207,7 +215,7 @@ class DegradedLikelihood:
         post_mean = torch.zeros_like(self.y)
         if x is not None:
             psnr_trace = torch.zeros((nb_batches, n_rem), device=device)
-            psnr = dinv.loss.metric.PSNR()
+            psnr = PSNR()
              
         axis = tuple(range(1, self.sampler.X.dim()))
 
@@ -257,9 +265,7 @@ class DegradedLikelihood:
 
                     if x is not None:
                         psnr_trace[t, n] = psnr(x, post_mean)
-                
-        n_rem = torch.tensor(n_rem*nb_noise, device=device)
-        
+                        
         if normalize:
             lik_trace = lik_trace - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
             es_trace = es_trace/self.f_add.sigma - 0.5 * self.dimx * torch.log(torch.tensor(2*torch.pi, device=device)) - self.dimx * torch.log(self.f_add.sigma)
@@ -276,3 +282,95 @@ class DegradedLikelihood:
             res = res + (psnr_trace.cpu(),)
 
         return res
+
+    def save_samples(self, nb_steps, nb_noise, burnin_ratio=0.25, thinning=10, thinning_noise=0, normalize=False, 
+                     noise_schedule=None, verbose=1):
+        """Just save the posterior samples and the y+ at each iteration"""
+        it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
+
+        nb_batches = nb_noise//self.batch_size
+        if noise_schedule is None:
+            noise_schedule = torch.randn((nb_batches, self.batch_size) + self.y.shape[1:], device=device)*self.f.sigma
+        else: 
+            assert (noise_schedule.shape[0], noise_schedule.shape[1]) == (nb_batches, self.batch_size), \
+                    "invalid shape {} for noise schedule".format(noise_schedule.shape)
+            
+        self._add_noise(noise_schedule[0])
+        samples_x = torch.zeros((nb_batches, self.batch_size, n_rem) + self.y.shape[1:], device=device)
+        yp_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
+        ym_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
+
+        post_mean = torch.zeros_like(self.y)
+
+        trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
+
+        with torch.no_grad():
+            for n in trange:  # warmup stage
+                self.sampler(self.y_sub)
+
+        trange = tqdm.tqdm(range(nb_batches)) if verbose >= 1 else range(nb_batches)
+        trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
+        with torch.no_grad():
+            for t in trange:                
+                self._add_noise(noise_schedule[t])
+                for _ in range(thinning_noise):
+                    self.sampler(self.y_sub)
+                yp_trace[t] = self.y_add.clone()  # save y+
+                ym_trace[t] = self.y_sub.clone()  # save y+
+
+                for n in trange2:
+                    for _ in range(thinning):
+                        self.sampler(self.factor(self.y_sub))
+
+                    samples_x[t, :, n] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+
+        return samples_x.cpu(), ym_trace.cpu(), yp_trace.cpu()
+
+    def save_samples_alpha_diff(self, nb_steps, nb_noise, alpha_schedule, burnin_ratio=0.25, thinning=10, 
+                                thinning_noise=0, normalize=False, noise_schedule=None, verbose=1):
+        """Just save the posterior samples and the y+ at each iteration"""
+        it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
+        nb_alphas = len(alpha_schedule)
+
+        nb_batches = nb_noise//self.batch_size
+        if noise_schedule is None:
+            noise_schedule = torch.randn((nb_batches, self.batch_size) + self.y.shape[1:], device=device)*self.f.sigma
+        else: 
+            assert ((noise_schedule.shape[0], noise_schedule.shape[1], noise_schedule.shape[2]) ==   
+                    (nb_alphas, nb_batches, self.batch_size)), \
+                    "invalid shape {} for noise schedule".format(noise_schedule.shape)
+        
+        self._update_alpha(alpha_schedule[0])    
+        self._add_noise(noise_schedule[0, 0])
+        samples_x = torch.zeros((nb_alphas, nb_batches, self.batch_size, n_rem) + self.y.shape[1:], device=device)
+        yp_trace = torch.zeros((nb_alphas, nb_batches, self.batch_size) + self.y.shape[1:], device=device)
+        ym_trace = torch.zeros((nb_alphas, nb_batches, self.batch_size) + self.y.shape[1:], device=device)
+
+        post_mean = torch.zeros_like(self.y)
+
+        trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
+
+        with torch.no_grad():
+            for n in trange:  # warmup stage
+                self.sampler(self.y_sub)
+
+        trangea = tqdm.tqdm(range(nb_alphas)) if verbose >= 1 else range(nb_alphas)
+        trange = tqdm.tqdm(range(nb_batches)) if verbose >= 2 else range(nb_batches)
+        trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
+        with torch.no_grad():
+            for a in trangea:
+                self._update_alpha(alpha_schedule[a])    
+                for t in trange:                
+                    self._add_noise(noise_schedule[a, t])
+                    for _ in range(thinning_noise):
+                        self.sampler(self.y_sub)
+                    yp_trace[a, t] = self.y_add.clone()  # save y+
+                    ym_trace[a, t] = self.y_sub.clone()  # save y+
+
+                    for n in trange2:
+                        for _ in range(thinning):
+                            self.sampler(self.factor(self.y_sub))
+
+                        samples_x[a, t, :, n] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+
+        return samples_x.cpu(), ym_trace.cpu(), yp_trace.cpu()

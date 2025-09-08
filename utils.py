@@ -50,6 +50,12 @@ def tcheby_der(x, n):
     else:
         return n * torch.sin(n * torch.acos(x)) / torch.sqrt(1 - x**2)
 
+def normalize(x):
+    "Project x in the [0, 1] range."
+    flatx = x.view(x.shape[0], -1)
+    minval, maxval = torch.min(flatx, dim=1).values, torch.max(flatx, dim=1).values
+    return (x - minval[:, None, None, None])/(maxval - minval)[:, None, None, None]
+
 
 def moffat(alpha=(1., 1), size=None):
     if size is None:

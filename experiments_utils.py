@@ -36,7 +36,7 @@ def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1, dtype=torch
 
 def generate_blur_operator(img_size, filter_torch, sigma):
     return BlurFFT(img_size=(1, img_size, img_size), filter=filter_torch, device=device, padding="circular",
-                             noise_model=GaussianNoise(sigma=sigma))
+                             noise_model=GaussianNoise(sigma=sigma, rng=torch.Generator(device=device)))
     
 
 def generate_measurements_natural(img_size, sigma, sigma_blur=0.1, im_ind=0):

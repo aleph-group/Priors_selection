@@ -59,18 +59,20 @@ class DegradedLikelihood:
             self.factor = lambda t: t
 
         self.physics = physics
-        if sampler == DiffPIR:
-            self.diff_flag = True
-            sampler_kwargs['physics'].noise_model.update_parameters(self.f.sigma / torch.sqrt(self.alpha))
-        else:
-            self.diff_flag = False
         self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
 
+        if sampler == DiffPIR:
+            print("Using DiffPIR")
+            self.diff_flag = True
+            self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
+        else:
+            self.diff_flag = False
+            
     def _update_alpha(self, new_val):
         self.alpha = new_val
         self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
         if self.diff_flag:  # update DIFFPIR noise model
-            self.sampler.p.noise_model.update_parameters(self.f.sigma / torch.sqrt(self.alpha))
+            self.sampler.p.noise_model.sigma.sigma = self.f.sigma / torch.sqrt(self.alpha)
     def _add_noise(self, noise=None):
         if noise is None:
             noise = torch.randn_like(self.y, device=device)*self.f.sigma
@@ -284,7 +286,7 @@ class DegradedLikelihood:
         return res
 
     def save_samples(self, nb_steps, nb_noise, burnin_ratio=0.25, thinning=10, thinning_noise=0, normalize=False, 
-                     noise_schedule=None, verbose=1):
+                     noise_schedule=None, compute_xp=False, verbose=1):
         """Just save the posterior samples and the y+ at each iteration"""
         it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
 
@@ -297,6 +299,8 @@ class DegradedLikelihood:
             
         self._add_noise(noise_schedule[0])
         samples_x = torch.zeros((nb_batches, self.batch_size, n_rem) + self.y.shape[1:], device=device)
+        if compute_xp:  # samples of x | y+
+            samples_xp = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
         yp_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
         ym_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
 
@@ -316,15 +320,36 @@ class DegradedLikelihood:
                 for _ in range(thinning_noise):
                     self.sampler(self.y_sub)
                 yp_trace[t] = self.y_add.clone()  # save y+
-                ym_trace[t] = self.y_sub.clone()  # save y+
+                ym_trace[t] = self.y_sub.clone()  # save y-
 
                 for n in trange2:
                     for _ in range(thinning):
                         self.sampler(self.factor(self.y_sub))
-
                     samples_x[t, :, n] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+                if compute_xp:
+                    if self.diff_flag:  # update to y+ sigma for sampling
+                        self.sampler.p.noise_model.sigma =  self.f.sigma / torch.sqrt(1-self.alpha)
+                        self.sampler.model.sigma = self.f.sigma / torch.sqrt(1-self.alpha)
+                    for _ in range(thinning):
+                        self.sampler(self.factor(self.y_add))
+                        
+                    samples_xp[t] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+                    
+                    if self.diff_flag:  # revert back to y- noise level
+                        self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
+                        self.sampler.model.sigma =  self.f.sigma / torch.sqrt(self.alpha)
+                        
+        samples_x = samples_x.reshape((-1, n_rem) +  samples_x.shape[-3:])    
+        ym_trace = ym_trace.reshape((-1,) + self.y.shape[1:])
+        yp_trace = yp_trace.reshape((-1,) + self.y.shape[1:])
+        
+        res = samples_x.cpu(), ym_trace.cpu(), yp_trace.cpu()
+        if compute_xp:
+            samples_xp = samples_xp.reshape((-1,) + samples_xp.shape[-3:])
 
-        return samples_x.cpu(), ym_trace.cpu(), yp_trace.cpu()
+            res = res + (samples_xp.cpu(),)
+            
+        return res
 
     def save_samples_alpha_diff(self, nb_steps, nb_noise, alpha_schedule, burnin_ratio=0.25, thinning=10, 
                                 thinning_noise=0, normalize=False, noise_schedule=None, verbose=1):

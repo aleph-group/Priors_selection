@@ -28,7 +28,7 @@ def generate_measurements_laplace(img_size, sigmax, sigma, sigma_blur=0.1, dtype
     return y, x, p
    
 
-def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1, dtype=torch.float32):
+def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1):
     filter_torch = gaussian_blur(sigma=(sigma_blur, sigma_blur)).to(device)
  
     return generate_blur_operator(img_size, filter_torch, sigma)
@@ -37,18 +37,6 @@ def generate_gaussian_blur_operator(img_size, sigma, sigma_blur=0.1, dtype=torch
 def generate_blur_operator(img_size, filter_torch, sigma):
     return BlurFFT(img_size=(1, img_size, img_size), filter=filter_torch, device=device, padding="circular",
                              noise_model=GaussianNoise(sigma=sigma, rng=torch.Generator(device=device)))
-    
-
-def generate_measurements_natural(img_size, sigma, sigma_blur=0.1, im_ind=0):
-    dataset_name = "set3c"
-    val_transform = transforms.Compose([transforms.CenterCrop(img_size), transforms.ToTensor()])
-    dataset = load_dataset("set3c", transform=val_transform)
-    x = dataset[im_ind][0].unsqueeze(0).to(device)
-    deco = Decolorize(device=device)
-    x = deco(x)
-    p = generate_gaussian_blur_operator(img_size, sigma_blur=sigma_blur, sigma=sigma)
-    y = p(x) 
-    return y, x, p
 
 
 def compute_evidence_gaussian_diag(d, sigmax, sigma, y, mlog=True):  # sum of X and a gaussian of variance sigma^2, -log () if mlog is True
@@ -62,16 +50,18 @@ def compute_evidence_gaussian_diag(d, sigmax, sigma, y, mlog=True):  # sum of X 
 
 def compute_test_gaussian_diag(d, sigmax, sigma, alpha, y, yp, ym, mlog=True):  # p(y+/y-) 
     sigmax2, sigma2 = sigmax**2, sigma**2 
-    res = -0.5*np.sum(y**2)*sigmax2/sigma2/(sigmax2 + sigma2) + 0.5 * alpha**2 * sigmax2 * np.sum(ym**2) / sigma2 / (alpha*sigmax2 + sigma2)
-    res += 0.5 * (1-alpha) * np.sum(yp**2) / sigma2
+    eps = (yp-ym) / (np.sqrt(alpha/(1-alpha)) + np.sqrt((1-alpha)/alpha))
+    res = np.sum((np.sqrt((1-alpha)/(sigma2 + sigmax2))*sigma*y +
+                   np.sqrt(alpha*(sigma2 + sigmax2))*eps/sigma)**2)/(alpha*sigmax2+sigma2)/2
+
     res += d*np.log(sigma) + 0.5*d*np.log(sigma2 + sigmax2)
+
     res += 0.5*d*np.log(2*np.pi)
-    
+
     res -= 0.5*d*np.log(1-alpha)
     res -= 0.5*d*np.log(alpha*sigmax2 + sigma2)
 
     if mlog == False:
         return np.exp(-res)
     else:
-        return res
-        
+        return res      

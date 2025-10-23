@@ -110,7 +110,7 @@ class SAPG:
 
     def run(self, delta, nb_steps, bounds, init_param=None, thinning_global=1,
             burnin_ratio=0.8, thinning_post=10, thinning_prior=10, tol=1e-4, alpha=None,
-            reuse_post=False):
+            reuse_post=False, verbose=True):
         """
         delta: fun that updates gradient stepsize
         """
@@ -143,10 +143,14 @@ class SAPG:
             post_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
             mean_hist = torch.zeros([nb_steps // thinning_global, len(g.param)], device=device)
         it_burnin = int(burnin_ratio*nb_steps)  # first iteration for updating mean
-        
-        trange = tqdm.tqdm(range(1, nb_steps + 1))
+
+        trange = range(1, nb_steps + 1)
+        if verbose:
+            trange = tqdm.tqdm(trange)
+
         for n in trange:
-            trange.set_description("theta={}, eta={}".format(g.param, self.eta))
+            if verbose:
+                trange.set_description("theta={}, eta={}".format(g.param, self.eta))
 
             with torch.no_grad():
 

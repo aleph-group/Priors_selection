@@ -84,42 +84,44 @@ for curr_ind in range(ind_start, ind_end + 1):
     x = deco(x)
 
     y = blur_op_gt(x)  # apply blur and noise
+
     img_path = ds_parent.samples[curr_ind][0]#ds_parent.samples[ds.indices[curr_ind]][0]
 
     for l in range(nkernels):
         blur_op = generate_blur_operator(img_size, filter_torch=kernels[l], sigma=sigma)
         print("Computing for image " + str(curr_ind))
 
-        L_f = blur_op.compute_norm(x0=torch.randn_like(x), tol=1e-5) / (sigma**2 / alpha)  
         L_g = 5*110.
-        gamma = 0.98*ls/(L_f + L_g)
 
         if mode == "compute_estimator":
+            L_f = blur_op.compute_norm(x0=torch.randn_like(x), tol=1e-5) / (sigma**2 / alpha)  
+            gamma = 0.98*ls/(L_f + L_g)
+
             dl = DegradedLikelihood(y.clone(), g, blur_op, sigma, gamma=gamma, X_init=blur_op.A_adjoint(y).to(device).clone(),
                                     sampler=SKROCK, sampler_kwargs={'s':s},
                                     project=None, alpha=alpha, batch_size=batch_size)
             samples_x, samples_ym, samples_yp = dl.save_samples(nb_steps, burnin_ratio=burnin_ratio, nb_noise=nb_noise, 
                                                                     thinning=1, thinning_noise=thinning_noise, 
-                                                                    noise_schedule=noise_schedule, compute_xp=False)
+                                                                    noise_schedule=noise_schedule, compute_xp=False, verbose=2)
             np.savez(os.path.join(save_folder, "trace_{}_{}_{}.npz".format(ind_gt, l, curr_ind)), samples_x=samples_x.numpy(), 
                      samples_ym=samples_ym.numpy(), samples_yp=samples_yp.numpy(),
                      img_path=img_path, y=y.cpu().numpy(), x=x.cpu().numpy())
             
         elif mode == "compute_psnr":
-            psnr = PSNR()
-
+            L_f = blur_op.compute_norm(x0=torch.randn_like(x), tol=1e-5) / sigma**2  
+            gamma = 0.98*ls/(L_f + L_g)
             res = np.zeros([nb_samples, 256**2], dtype=np.float32)
 
             f = L2(sigma, blur_op)
 
             gradU = lambda t, y: f.grad(t, y) + g.grad(t, None)
         
-            sampler = SKROCK(gradU, gamma, blur_op.A_A_adjoint(y).to(device).clone(), lambda t: t, s=15)
+            sampler = SKROCK(gradU, gamma, blur_op.A_adjoint(y).to(device).clone(), lambda t: t, s=15)
         
             for i in range(100):  # warm up
                 sampler(y)
         
-            for i in range(nb_steps):
+            for i in range(nb_samples):
                 sampler(y)
                 res[i] = sampler.X.cpu().numpy().reshape(-1)
             np.save(os.path.join(save_folder, "samples_y_{}_{}_{}.npy".format(ind_gt, l, curr_ind)), res)

@@ -1,0 +1,1 @@
+{"in_folder": "datasets/ffhqsub", "sigma": 0.05, "sigma_blur": 0.5, "alpha": 0.1, "model_path": "models/diffusion/ffhq_p2.pt", "noise_path": "results/diffusion/noise_schedule_natural_005.npy", "nb_steps": 20, "nb_noise": 10}

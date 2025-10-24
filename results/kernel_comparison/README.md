@@ -1,0 +1,1 @@
+All the results from the kernel selection experiments, such as the SK-ROCK samples, are saved here for post-processing.

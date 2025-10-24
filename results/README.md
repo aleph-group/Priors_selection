@@ -1,0 +1,1 @@
+Results folder, split in OOD detection experiments (diffusion) and kernel selection experiments (kernel_comparison).

@@ -1,0 +1,1 @@
+Samples for the OOD detection experiments are stored here (natural refers to experiments on natural images).

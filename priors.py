@@ -55,25 +55,6 @@ class L2(Likelihood):
     def grad(self, x, y):
         return self.p.A_adjoint(self.p.A(x) - y) / self.sigma**2
 
-
-class CombinedPrior(ParametrizedPrior):
-    def __init__(self, param, prior1, prior2):
-        super().__init__(param)
-        self.prior1 = prior1
-        self.prior2 = prior2
-
-    def grad(self, x, lam_reg):
-        return self.param * self.prior1.grad(x, lam_reg) + (1 - self.param) * self.prior2.grad(x, lam_reg)
-
-    def forward(self, x):
-        return self.param * self.prior1(x) + (1 - self.param) * self.prior2(x)
-
-    def grad_param(self, x):
-        return  self.prior1.grad_param(x) - self.prior2.grad_param(x)
-
-    def lipsch_bound(self, lam_reg=None):
-        return self.param*self.prior1.lipsch_bound(lam_reg) + (1-self.param)*self.prior2.lipsch_bound(lam_reg)
-
         
 class GSDPrior(ParametrizedPrior):
     r"""s
@@ -159,43 +140,3 @@ class L1Prior(ParametrizedPrior):
 
     def grad_param(self, x):
         return torch.sum(torch.abs(x))
-
-
-class CRRPrior(ParametrizedPrior):
-    def __init__(self, param, crr_model):
-        super().__init__(param)  # param = lambda, mu
-        self.crr_model = crr_model
-
-    def forward(self, x):
-        return self.param[0] * self.crr_model.cost(self.param[1]*x) / self.param[1]
-
-    def grad(self, x, lam_reg):
-        return self.param[0] * self.crr_model(self.param[1]*x)
-        
-    def grad_param(self, x):
-        return torch.tensor([self.crr_model.cost(self.param[1]*x) / self.param[1], 
-                             self.param[0] * (torch.sum(x*self.crr_model(self.param[1]*x)) / self.param[1] -
-                                              self.crr_model.cost(self.param[1]*x) / self.param[1]**2)], 
-                            device=device)
-
-    def lipsch_bound(self, lam_reg=None):
-        return self.crr_model.precise_lipschitz_bound(n_iter=500)*self.param[0]*self.param[1]
-        
-        
-class CRRPriorStaticMu(ParametrizedPrior):
-    def __init__(self, param, crr_model):
-        super().__init__(param[0])  # param = lambda, mu
-        self.crr_model = crr_model
-        self.mu = param[1]
-
-    def grad_param(self, x):
-        return self.crr_model.cost(self.mu*x) / self.mu
-
-    def forward(self, x):
-        return self.param * self.crr_model.cost(self.mu*x) / self.mu
-
-    def grad(self, x, lam_reg):
-        return self.param * self.crr_model(self.mu*x)
-
-    def lipsch_bound(self, lam_reg=None):
-        return self.crr_model.precise_lipschitz_bound(n_iter=500)*self.param*self.mu

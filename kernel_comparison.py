@@ -1,3 +1,8 @@
+"""Compute samples of the posterior law x|y^- using SKROCK. 
+/!\ For the first execution : a noise schedule should be generated (can be done by setting "regenerate" to True.).
+Once the noise schedule has been generated, it should be kept consistent across experiments (especially for law number of noise realizations).
+"""
+
 from deepinv.loss.metric import PSNR
 from deepinv.physics import Decolorize
 from deepinv.models import GSDRUNet
@@ -15,7 +20,8 @@ from torchvision.datasets import ImageFolder
 from torchvision.transforms import Resize
 from torchvision import transforms
 
-mode = "compute_psnr"
+mode = "compute_estimator"
+regenerate_noise = False
 
 folder = "datasets/set3c/"
 save_folder = "results/kernel_comparison"
@@ -51,8 +57,7 @@ nb_samples = 100  # nb of samples for computing the posterior mean
 batch_size = 1
 
 noise_schedule_path = "results/kernel_comparison/noise_schedule.npy"  # path for E_eps noise schedule (regenerated otherwise)
-regenerate = False
-if regenerate:
+if regenerate_noise:
     noise_schedule = torch.randn((nb_noise//batch_size, batch_size,) + (1, img_size, img_size), device=device)*sigma
     np.save(noise_schedule_path, noise_schedule.cpu().numpy())
 else:

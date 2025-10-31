@@ -8,6 +8,9 @@ Modern imaging techniques heavily rely on Bayesian statistical models to address
 
 <img src="ex26.png" width="800px"/>
 
+<div align="center">
+  Data fission from a single measurement: two measurements $y^+$ and $y^-$ are obtained by noise injection. By drawing from the posterior laws $x|y^+$ and $x|y^-$, we can evaluate prior misspecifications.
+</div>
 
 ## Datasets
 

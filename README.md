@@ -1,4 +1,4 @@
-Code for the paper "Bayesian model selection and misspecification testing in imaging inverse problems only from noisy and partial measurements".
+Code for the paper [Bayesian model selection and misspecification testing in imaging inverse problems only from noisy and partial measurements](https://arxiv.org/abs/2510.27663).
 
 The code was executed using python 3.12.8, torch 2.6.0 and deepinv 0.3.3.
 
@@ -8,9 +8,7 @@ Modern imaging techniques heavily rely on Bayesian statistical models to address
 
 <img src="ex26.png" width="800px"/>
 
-<div align="center">
   Data fission from a single measurement: two measurements $y^+$ and $y^-$ are obtained by noise injection. By drawing from the posterior laws $x|y^+$ and $x|y^-$, we can evaluate prior misspecifications.
-</div>
 
 ## Datasets
 

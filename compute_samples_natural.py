@@ -10,7 +10,7 @@ from torchvision import transforms
 from experiments_utils import generate_blur_operator
 from deepinv.physics.blur import gaussian_blur
 from deepinv.models import DiffUNet
-
+from deepinv.physics import PoissonNoise, BlurFFT
 
 if len(sys.argv[1:]) == 3:
     out_folder = sys.argv[1]
@@ -25,15 +25,15 @@ in_folder = config_file["in_folder"]
 model_path = config_file["model_path"]
 denoiser = DiffUNet(pretrained=model_path, in_channels=3, out_channels=3, large_model=False).to(device)
 
-sigma = config_file["sigma"]  # measurement noise
+sigma =  config_file["sigma"]  # measurement noise
 img_size = 256
 
 nb_steps, nb_noise = config_file["nb_steps"], config_file["nb_noise"] 
-niter_diffpir = 300
-batch_size = 2
+niter_diffpir = 50#300
+batch_size = 1
 
-noise_schedule_path = config_file["noise_path"]  
-noise_schedule = torch.tensor(np.load(noise_schedule_path), device=device).float()
+#noise_schedule_path = config_file["noise_path"]  
+#noise_schedule = torch.tensor(np.load(noise_schedule_path), device=device).float()
 
 alpha = torch.tensor(config_file["alpha"], device=device)
 sigma_blur = config_file["sigma_blur"]  # gaussian blur standard deviation
@@ -44,11 +44,14 @@ ds = ImageFolder(in_folder, val_transform)  # create a dataloader instance
 for i in range(ind_start, ind_end + 1):
     print("Computing for image " + str(i))
     
-    physics = generate_blur_operator(img_size, 
-                                     filter_torch=gaussian_blur(sigma=(sigma_blur, sigma_blur)).to(device), 
-                                     sigma=sigma)
+    noise_model = PoissonNoise(sigma, rng=torch.Generator(device=device))
+
+    filter_torch = gaussian_blur(sigma=(0.5, 0.5)).to(device)
+
+    physics =  BlurFFT(img_size=(1, 256, 256), filter=filter_torch, device=device, padding="circular",
+                             noise_model=noise_model)
     physics.noise_model.rng_manual_seed(i)  # for reproducibility
-    
+
     img_path = ds.samples[i]
     x, cat = ds[i]
     x = x.unsqueeze(0).to(device)
@@ -64,7 +67,7 @@ for i in range(ind_start, ind_end + 1):
     
     samples_x, samples_ym, samples_yp, samples_xp = dl.save_samples(nb_steps, burnin_ratio=0, nb_noise=nb_noise, 
                                                                     thinning=1, thinning_noise=0, 
-                                                                    noise_schedule=noise_schedule, compute_xp=True)
+                                                                    noise_schedule=None, compute_xp=True)
 
    
     np.savez(os.path.join(out_folder, "trace_{}.npz".format(i)), samples_x=samples_x.numpy(), 

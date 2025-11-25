@@ -3,10 +3,65 @@ from priors import L2
 import tqdm
 from utils import device
 from deepinv.loss.metric import PSNR
-from sampling import ULA, GaussianDiag, DiffPIR
+from sampling import ULA, GaussianDiag
 import numpy as np
+from deepinv.sampling import DiffPIR as dinv_DiffPIR
+from deepinv.optim.data_fidelity import DataFidelity
+from deepinv.optim.distance import PoissonLikelihoodDistance
+import scipy
 
 
+    
+
+class PoissonLikelihood_mod(DataFidelity):
+    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = True, physics=None, b=1e-3):
+        super().__init__()
+        self.d = PoissonLikelihoodDistance(gain=gain, bkg=bkg, denormalize=denormalize)
+        self.bkg = bkg
+        self.gain = gain
+        self.normalize = denormalize
+        self.physics = physics
+        self.b = b
+    def prox(
+        self, x: torch.Tensor, y: torch.Tensor, *args, gamma: float = 1.0, **kwargs
+    ) -> torch.Tensor:
+        r"""
+        Proximal operator of the Kullback-Leibler divergence
+
+        :param torch.Tensor x: signal :math:`x` at which the function is computed.
+        :param torch.Tensor y: measurement :math:`y`.
+        :param float gamma: proximity operator step size.
+        """
+        def obj(t):
+            t_tens = torch.tensor(t, device=device, dtype=torch.float32)
+            return (gamma*self.fn(t_tens.reshape(x.shape)+self.b, y,physics=self.physics) + 0.5*torch.sum(torch.square(x.flatten()-t_tens))).detach().item()
+        def der(t):
+            t_tens = torch.tensor(t, device=device, dtype=torch.float32)
+
+            return (gamma*self.grad(t_tens.reshape(x.shape)+self.b, y, physics=self.physics).flatten() + t_tens-x.flatten()).cpu()
+
+        bounds = (((0., 1.),) * x.flatten().shape[0] )
+        result = scipy.optimize.minimize(obj, x.flatten().cpu().numpy(), method='L-BFGS-B', jac=der, bounds = bounds, tol = 1e-2) 
+        out = torch.tensor(result["x"].reshape(x.shape), device=device, dtype=torch.float32)
+        return out 
+
+
+
+
+class DiffPIR:
+    def __init__(self, gradU, gamma, X_init, proj, physics, denoiser, data_fidelity, sigma, verbose=False, 
+                 batch_size=1, max_iter=500, lambda_=7.):
+        self.model = dinv_DiffPIR(data_fidelity=data_fidelity, model=denoiser, device=device,
+                                  sigma=sigma,
+                                  verbose=verbose, max_iter=max_iter, lambda_=lambda_)
+        self.p = physics
+        self.batch_size = batch_size
+        
+    def __call__(self, y,  *args, **kwargs):
+        self.X = self.model(y.repeat(self.batch_size, 1, 1, 1), self.p, x_init=torch.ones_like(y))
+        return self.X
+    
+    
 class DegradedLikelihood:
     def __init__(self, y, prior, physics, sigma, gamma, sampler=ULA, sampler_kwargs={}, batch_size=1,
                  X_init=None, lam_reg=None, project='clamp', noise=None, alpha=0.5, **kwargs):
@@ -21,13 +76,15 @@ class DegradedLikelihood:
         noise: initial additional degradation. A new sample is generated if None.
         """
         self.prior = prior
-        self.f = L2(sigma, physics)  # likelihood for Ax + N
+        self.f = PoissonLikelihood_mod(sigma, physics=physics, b=1e-3)  # likelihood for Ax + N
         self.alpha = torch.clone(alpha).detach()
-        self.f_add = L2(sigma / torch.sqrt(1-self.alpha), physics)  # likelihood for Ax + N + e*calpha
-        self.f_sub = L2(sigma / torch.sqrt(self.alpha), physics)  # likelihood for Ax + N + e/calpha
+        self.f_sub = PoissonLikelihood_mod(sigma/alpha, physics=physics, b=1e-3)  # likelihood for Ax + N/alpha
+        self.f_add = PoissonLikelihood_mod(sigma/(1-alpha), physics=physics, b=1e-3)  # likelihood for Ax + N/(1-alpha)
 
         self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
         self.y = y
+        self.z = torch.round(y/sigma)
+        self.sigma = sigma
         self.dimx = y.numel()
         self.gamma = gamma  # MC step
         self.lam_reg = lam_reg  # prior regularization parameter
@@ -59,24 +116,22 @@ class DegradedLikelihood:
             self.factor = lambda t: t
 
         self.physics = physics
-        self.sampler = sampler(gradU, gamma, X_post, proj=proj, **sampler_kwargs)
+        self.sampler_sub = DiffPIR(None, None, y, proj=None, batch_size=1, physics=physics, data_fidelity=self.f_sub,
+                                   sigma=self.sigma/self.alpha,  
+                   denoiser=sampler_kwargs["denoiser"], max_iter=sampler_kwargs.get("max_iter", 500))
+        self.sampler_add = DiffPIR(None, None, y, proj=None, batch_size=1, physics=physics, data_fidelity=self.f_add, sigma=self.sigma/(1-self.alpha),
+                   denoiser=sampler_kwargs["denoiser"], max_iter=sampler_kwargs.get("max_iter", 500))
 
-        if sampler == DiffPIR:
-            print("Using DiffPIR")
-            self.diff_flag = True
-            self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
-        else:
-            self.diff_flag = False
+
             
     def _update_alpha(self, new_val):
         self.alpha = new_val
         self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
-        if self.diff_flag:  # update DIFFPIR noise model
-            self.sampler.p.noise_model.sigma.sigma = self.f.sigma / torch.sqrt(self.alpha)
+
     def _add_noise(self, noise=None):
-        if noise is None:
-            noise = torch.randn_like(self.y, device=device)*self.f.sigma
-        self.y_sub, self.y_add = self.y - noise/self.calpha, self.y + noise*self.calpha 
+        omega = torch.binomial(self.z, prob=torch.tensor([self.alpha]))
+        self.y_add = (self.y-self.sigma*omega)/(1-self.alpha)
+        self.y_sub = self.y/self.alpha -  (1-self.alpha)/self.alpha*self.y_add
 
     def _get_nit(self, nb_steps, burnin_ratio):
         it_burnin = int(burnin_ratio*nb_steps) if burnin_ratio < 1 else burnin_ratio
@@ -291,20 +346,15 @@ class DegradedLikelihood:
         it_burnin, n_rem = self._get_nit(nb_steps, burnin_ratio)
 
         nb_batches = nb_noise//self.batch_size
-        if noise_schedule is None:
-            noise_schedule = torch.randn((nb_batches, self.batch_size) + self.y.shape[1:], device=device)*self.f.sigma
-        else: 
-            assert (noise_schedule.shape[0], noise_schedule.shape[1]) == (nb_batches, self.batch_size), \
-                    "invalid shape {} for noise schedule".format(noise_schedule.shape)
+        
             
-        self._add_noise(noise_schedule[0])
+        self._add_noise()
         samples_x = torch.zeros((nb_batches, self.batch_size, n_rem) + self.y.shape[1:], device=device)
         if compute_xp:  # samples of x | y+
             samples_xp = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
         yp_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
         ym_trace = torch.zeros((nb_batches, self.batch_size) + self.y.shape[1:], device=device)
 
-        post_mean = torch.zeros_like(self.y)
 
         trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
 
@@ -316,7 +366,7 @@ class DegradedLikelihood:
         trange2 = tqdm.tqdm(range(n_rem), mininterval=1) if verbose >= 2 else range(n_rem)
         with torch.no_grad():
             for t in trange:                
-                self._add_noise(noise_schedule[t])
+                self._add_noise()
                 for _ in range(thinning_noise):
                     self.sampler(self.y_sub)
                 yp_trace[t] = self.y_add.clone()  # save y+
@@ -324,20 +374,16 @@ class DegradedLikelihood:
 
                 for n in trange2:
                     for _ in range(thinning):
-                        self.sampler(self.factor(self.y_sub))
-                    samples_x[t, :, n] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+                        self.sampler_sub(self.factor(self.y_sub))
+                    samples_x[t, :, n] = self.sampler_sub.X.view((self.batch_size,) + self.y.shape[1:]).clone()
                 if compute_xp:
-                    if self.diff_flag:  # update to y+ sigma for sampling
-                        self.sampler.p.noise_model.sigma =  self.f.sigma / torch.sqrt(1-self.alpha)
-                        self.sampler.model.sigma = self.f.sigma / torch.sqrt(1-self.alpha)
+    
                     for _ in range(thinning):
-                        self.sampler(self.factor(self.y_add))
-                        
-                    samples_xp[t] = self.sampler.X.view((self.batch_size,) + self.y.shape[1:]).clone()
-                    
-                    if self.diff_flag:  # revert back to y- noise level
-                        self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
-                        self.sampler.model.sigma =  self.f.sigma / torch.sqrt(self.alpha)
+                        self.sampler_add(self.factor(self.y_add))
+
+                    samples_xp[t] = self.sampler_add.X.view((self.batch_size,) + self.y.shape[1:]).clone()
+
+
                         
         samples_x = samples_x.reshape((-1, n_rem) +  samples_x.shape[-3:])    
         ym_trace = ym_trace.reshape((-1,) + self.y.shape[1:])
@@ -370,8 +416,6 @@ class DegradedLikelihood:
         samples_x = torch.zeros((nb_alphas, nb_batches, self.batch_size, n_rem) + self.y.shape[1:], device=device)
         yp_trace = torch.zeros((nb_alphas, nb_batches, self.batch_size) + self.y.shape[1:], device=device)
         ym_trace = torch.zeros((nb_alphas, nb_batches, self.batch_size) + self.y.shape[1:], device=device)
-
-        post_mean = torch.zeros_like(self.y)
 
         trange = tqdm.tqdm(range(it_burnin)) if verbose >= 1 else range(it_burnin)
 

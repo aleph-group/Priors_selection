@@ -44,19 +44,21 @@ ds = ImageFolder(in_folder, val_transform)  # create a dataloader instance
 for i in range(ind_start, ind_end + 1):
     print("Computing for image " + str(i))
     
-    noise_model = PoissonNoise(sigma, rng=torch.Generator(device=device))
+    noise_model = PoissonNoise(sigma, rng=torch.Generator(device=device), clip_positive=True)
 
     filter_torch = gaussian_blur(sigma=(0.5, 0.5)).to(device)
 
     physics =  BlurFFT(img_size=(1, 256, 256), filter=filter_torch, device=device, padding="circular",
-                             noise_model=noise_model)
-    physics.noise_model.rng_manual_seed(i)  # for reproducibility
+    noise_model=noise_model)
+    
+    add = 0 if in_folder.endswith("ffhqsub") else 75
+    physics.noise_model.rng_manual_seed(i+add)  # for reproducibility
 
     img_path = ds.samples[i]
     x, cat = ds[i]
     x = x.unsqueeze(0).to(device)
     y = physics(x)  # apply blur and noise
-
+    
     dl = DegradedLikelihood(y=y, prior=denoiser, physics=physics, sigma=sigma, gamma=0, 
                             X_init=physics.A_adjoint(y).to(device).clone(),
                             sampler=DiffPIR, sampler_kwargs={'batch_size':1, 'physics':physics,  

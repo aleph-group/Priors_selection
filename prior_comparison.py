@@ -11,45 +11,71 @@ from deepinv.optim.distance import PoissonLikelihoodDistance
 import scipy
 
 
+def PIDAL(x_hat, physics, y, gamma, gain, nit=3000, tol = 1e-2, mu=None, verbose=False):
+    mu = max(torch.max(x_hat)/50/gamma, 20.) if mu is None else mu
+    N_dim = x_hat.ravel().shape[0]
+    u1, u2, u3 = x_hat.clone(), x_hat.clone(), x_hat.clone()
+
+    d1, d2, d3 = torch.zeros_like(x_hat), torch.zeros_like(x_hat), torch.zeros_like(x_hat)
+    z_approx = u3.clone()
+
+    for it in range(0, nit):
+
+        z_old = z_approx.clone()
+        old_norms = torch.norm(z_old.reshape(z_old.shape[0], -1), dim=-1)
+        zeta1 = u1 + d1  # by definition
+        zeta2 = u2 + d2
+        zeta3 = u3 + d3
+        
+        gammak = physics.A_adjoint(zeta1) + zeta2 + zeta3
+        z = physics.inv_2id(gammak)
+        
+        nu1 = physics.A(z) - d1
+        u1 = 0.5 * (nu1 - gamma/mu/gain + torch.sqrt((nu1-gamma/mu/gain)**2 + 4*gamma*y/mu/gain))
+
+        nu2 = z - d2
+        u2 = (nu2*mu + x_hat) / (mu + 1)
+        nu3 = z - d3
+        
+        u3 = torch.clip(nu3, min=0)
+        
+        d1 = u1 - nu1
+        d2 = u2 - nu2
+        d3 = u3 - nu3
+        
+        z_approx = u3.clone()
+        normx = torch.norm((z_approx-z_old).reshape(z_old.shape[0], -1), dim=-1)/old_norms    
+        old_norms = normx.clone()
+        if it > 10 and torch.all(normx < tol):
+          
+            break
+
+    if verbose:
+        print("Nb it:", it+1, "mu: ", mu)
+
+    return torch.clip(z_approx, 0, 1.) 
     
 
 class PoissonLikelihood_mod(DataFidelity):
-    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = True, physics=None, b=1e-3):
+    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = True, physics=None):
         super().__init__()
         self.d = PoissonLikelihoodDistance(gain=gain, bkg=bkg, denormalize=denormalize)
         self.bkg = bkg
         self.gain = gain
         self.normalize = denormalize
         self.physics = physics
-        self.b = b
     def prox(
         self, x: torch.Tensor, y: torch.Tensor, *args, gamma: float = 1.0, **kwargs
     ) -> torch.Tensor:
-        r"""
-        Proximal operator of the Kullback-Leibler divergence
 
-        :param torch.Tensor x: signal :math:`x` at which the function is computed.
-        :param torch.Tensor y: measurement :math:`y`.
-        :param float gamma: proximity operator step size.
-        """
-        def obj(t):
-            t_tens = torch.tensor(t, device=device, dtype=torch.float32)
-            return (gamma*self.fn(t_tens.reshape(x.shape)+self.b, y,physics=self.physics) + 0.5*torch.sum(torch.square(x.flatten()-t_tens))).detach().item()
-        def der(t):
-            t_tens = torch.tensor(t, device=device, dtype=torch.float32)
-
-            return (gamma*self.grad(t_tens.reshape(x.shape)+self.b, y, physics=self.physics).flatten() + t_tens-x.flatten()).cpu()
-
-        bounds = (((0., 1.),) * x.flatten().shape[0] )
-        result = scipy.optimize.minimize(obj, x.flatten().cpu().numpy(), method='L-BFGS-B', jac=der, bounds = bounds, tol = 1e-2) 
-        out = torch.tensor(result["x"].reshape(x.shape), device=device, dtype=torch.float32)
+        out= PIDAL(x, self.physics, y, gamma=gamma, gain=self.gain, nit=1000, tol = 1e-4, mu=20)
         return out 
 
 
 
 
 class DiffPIR:
-    def __init__(self, gradU, gamma, X_init, proj, physics, denoiser, data_fidelity, sigma, verbose=False, 
+    def __init__(self, gradU, gamma, X_init, proj, physics, denoiser, data_fidelity, sigma, verbose=True, 
                  batch_size=1, max_iter=500, lambda_=7.):
         self.model = dinv_DiffPIR(data_fidelity=data_fidelity, model=denoiser, device=device,
                                   sigma=sigma,
@@ -58,7 +84,7 @@ class DiffPIR:
         self.batch_size = batch_size
         
     def __call__(self, y,  *args, **kwargs):
-        self.X = self.model(y.repeat(self.batch_size, 1, 1, 1), self.p, x_init=torch.ones_like(y))
+        self.X = self.model(y.repeat(self.batch_size, 1, 1, 1), self.p, x_init=self.p.A_adjoint(y))
         return self.X
     
     
@@ -76,14 +102,14 @@ class DegradedLikelihood:
         noise: initial additional degradation. A new sample is generated if None.
         """
         self.prior = prior
-        self.f = PoissonLikelihood_mod(sigma, physics=physics, b=1e-3)  # likelihood for Ax + N
+        self.f = PoissonLikelihood_mod(sigma, physics=physics)  # likelihood for Ax + N
         self.alpha = torch.clone(alpha).detach()
-        self.f_sub = PoissonLikelihood_mod(sigma/alpha, physics=physics, b=1e-3)  # likelihood for Ax + N/alpha
-        self.f_add = PoissonLikelihood_mod(sigma/(1-alpha), physics=physics, b=1e-3)  # likelihood for Ax + N/(1-alpha)
+        self.f_sub = PoissonLikelihood_mod(sigma/alpha, physics=physics)  # likelihood for Ax + N/alpha
+        self.f_add = PoissonLikelihood_mod(sigma/(1-alpha), physics=physics)  # likelihood for Ax + N/(1-alpha)
 
         self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
-        self.y = y
-        self.z = torch.round(y/sigma)
+        self.y = y.reshape((1,) + y.shape[1:])
+        self.z = torch.round(y.repeat(batch_size, 1, 1, 1)/sigma)
         self.sigma = sigma
         self.dimx = y.numel()
         self.gamma = gamma  # MC step
@@ -117,10 +143,10 @@ class DegradedLikelihood:
 
         self.physics = physics
         self.sampler_sub = DiffPIR(None, None, y, proj=None, batch_size=1, physics=physics, data_fidelity=self.f_sub,
-                                   sigma=self.sigma/self.alpha,  
+                                   sigma=1.,  
                    denoiser=sampler_kwargs["denoiser"], max_iter=sampler_kwargs.get("max_iter", 500))
-        self.sampler_add = DiffPIR(None, None, y, proj=None, batch_size=1, physics=physics, data_fidelity=self.f_add, sigma=self.sigma/(1-self.alpha),
-                   denoiser=sampler_kwargs["denoiser"], max_iter=sampler_kwargs.get("max_iter", 500))
+        self.sampler_add = DiffPIR(None, None, y, proj=None, batch_size=1, physics=physics, data_fidelity=self.f_add, sigma=1.,
+                                   denoiser=sampler_kwargs["denoiser"], max_iter=sampler_kwargs.get("max_iter", 500))
 
 
             
@@ -129,7 +155,7 @@ class DegradedLikelihood:
         self.calpha = torch.sqrt(self.alpha / (1-self.alpha))
 
     def _add_noise(self, noise=None):
-        omega = torch.binomial(self.z, prob=torch.tensor([self.alpha]))
+        omega = torch.binomial(self.z, prob=torch.tensor([self.alpha], device=device)).to(device)
         self.y_add = (self.y-self.sigma*omega)/(1-self.alpha)
         self.y_sub = self.y/self.alpha -  (1-self.alpha)/self.alpha*self.y_add
 

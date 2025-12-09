@@ -18,7 +18,14 @@ if len(sys.argv[1:]) == 3:
 else:
     print("Usage: python3 compute_samples_natural.py path ind_start ind_end")
     exit(1)
-    
+
+class BlurFFTmod(BlurFFT):
+    def __init__(self, img_size: tuple[int, ...], filter: torch.Tensor = None, 
+                 device: str | torch.device = "cpu", **kwargs):
+        super().__init__(img_size, filter, device, **kwargs)
+    def inv_2id(self, x):
+        return self.V(self.V_adjoint(x)/(self.mask**2 + 2)) 
+
 config_file = json_to_dict(os.path.join(out_folder, "config.json"))
 in_folder = config_file["in_folder"]
 
@@ -29,8 +36,8 @@ sigma =  config_file["sigma"]  # measurement noise
 img_size = 256
 
 nb_steps, nb_noise = config_file["nb_steps"], config_file["nb_noise"] 
-niter_diffpir = 50#300
-batch_size = 1
+niter_diffpir = 300
+batch_size = 10
 
 #noise_schedule_path = config_file["noise_path"]  
 #noise_schedule = torch.tensor(np.load(noise_schedule_path), device=device).float()
@@ -48,7 +55,7 @@ for i in range(ind_start, ind_end + 1):
 
     filter_torch = gaussian_blur(sigma=(0.5, 0.5)).to(device)
 
-    physics =  BlurFFT(img_size=(1, 256, 256), filter=filter_torch, device=device, padding="circular",
+    physics =  BlurFFTmod(img_size=(1, 256, 256), filter=filter_torch, device=device, padding="circular",
     noise_model=noise_model)
     
     add = 0 if in_folder.endswith("ffhqsub") else 75

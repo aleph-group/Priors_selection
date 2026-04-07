@@ -7,7 +7,7 @@
 *.jpg
 *.h5
 *.pth
-*.pdf
+# *.pdf
 *.pkl
 *.pt
 *.ipynb_checkpoints

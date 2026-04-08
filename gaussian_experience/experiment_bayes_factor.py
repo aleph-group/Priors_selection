@@ -96,7 +96,7 @@ def log_posterior_predictive(y, w, sigma2, sigmax2, alpha):
     ab = np.sqrt(alpha * (1 - alpha))
     quad = a2 * np.sum(y**2) + 2 * ab * np.dot(y, w) + b2 * np.sum(w**2)
 
-    log_score = (m / 2) * np.log((1 - alpha) * tau2 / ((2 * np.pi) ** 2 * sigma2 * s2))
+    log_score = (m / 2) * np.log((1 - alpha) * tau2 / ((2 * np.pi) * sigma2 * s2))
     log_score -= quad / (2 * tau2)
     return log_score
 
@@ -120,14 +120,14 @@ def expected_cv_score(y_norm2, m, sigma2, sigmax2, alpha):
     r"""E_w[log p(y+ | y-, sigma_x^2)] analytically.
 
     From Eq. (expected_log_score) of the plan:
-      E[log p] = (m/2) log((1-alpha)*tau^2 / ((2pi)^2 sigma^2 s^2))
+      E[log p] = (m/2) log((1-alpha)*tau^2 / (2pi * sigma^2 * s^2))
                  - (1-alpha)*sigma^2*||y||^2 / (2*tau^2*s^2)
                  - alpha*s^2*m / (2*tau^2)
     """
     s2 = sigma2 + sigmax2
     tau2 = alpha * sigmax2 + sigma2
     return (
-        (m / 2) * np.log((1 - alpha) * tau2 / ((2 * np.pi) ** 2 * sigma2 * s2))
+        (m / 2) * np.log((1 - alpha) * tau2 / ((2 * np.pi) * sigma2 * s2))
         - (1 - alpha) * sigma2 * y_norm2 / (2 * tau2 * s2)
         - alpha * s2 * m / (2 * tau2)
     )

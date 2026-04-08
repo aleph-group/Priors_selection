@@ -77,6 +77,7 @@ class DegradedLikelihood:
         if sampler == GaussianDiag:  # if x follows a diagonal Gaussian prior
             self.factor = (
                 lambda t: self.alpha
+                * kwargs["sigmax"] ** 2
                 * t
                 / (self.f.sigma**2 + self.alpha * kwargs["sigmax"] ** 2)
             )

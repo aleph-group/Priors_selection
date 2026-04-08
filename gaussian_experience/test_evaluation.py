@@ -31,7 +31,7 @@ if test_case == - 1:   # test that skrock outputs the correct posterior distribu
     y, x, p = generate_measurements_gaussian_diag(d, sigmax, sigma)
     noise = torch.randn([1, 1, d], device=device)*sigma
     L_f = 1 / (sigma**2 / (alpha) )
-    L_g = d / sigmax**2
+    L_g = 1 / sigmax**2
     gamma = 0.98*1/(L_f + L_g)
     g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), torch.ones(d, device=device)/sigmax**2)
     dl = DegradedLikelihood(y, g, p, sigma, gamma, X_init=p.A_A_adjoint(y).to(device).clone(), noise=noise,
@@ -104,7 +104,7 @@ if test_case == 0 or test_case == 1:
 
             alpha = alphas[i]
             L_f = 1 / (sigma**2 / alpha)  # noise level for y-  
-            L_g = d / sigmax**2
+            L_g = 1 / sigmax**2
             gamma = 0.98*1/(L_f + L_g)          
             for t in range(ntry):
                 print("------- t={}/{}".format(t, ntry-1))
@@ -168,7 +168,7 @@ if test_case == 2 or test_case == 3:
                                           torch.ones(d, device=device)/sigmax**2)
 
         L_f = 1 / (sigma**2 / alpha)  
-        L_g = d / sigmax**2
+        L_g = 1 / sigmax**2
         gamma = 0.98*1/(L_f + L_g)
         y, x, p = ys[l], xs[l], ps[l]
         for t in range(ntry):
@@ -233,7 +233,7 @@ if test_case == 4:
                 noise = noises[k]
                 # start with exact sigma
                 L_f = 1 / (sigma**2 / alpha )  
-                L_g = d / sigmax_ex**2
+                L_g = 1 / sigmax_ex**2
                 gamma = torch.tensor(0.98*1/(L_f + L_g), device=device, dtype=torch.float32)
                 g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), 
                                                   torch.ones(d, device=device)/sigmax_ex**2)
@@ -249,7 +249,7 @@ if test_case == 4:
                 for l in range(nsigma):
                    
                     new_sigmax = sigmaxs[l]
-                    L_g = d / new_sigmax**2
+                    L_g = 1 / new_sigmax**2
                     gamma = 0.98*1/(L_f + L_g)
 
                     g = DiagonalWeightedTikhonovPrior(torch.tensor(1., device=device), 

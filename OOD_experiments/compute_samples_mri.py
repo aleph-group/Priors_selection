@@ -5,7 +5,7 @@ from prior_comparison import DegradedLikelihood
 from utils import device, json_to_dict, normalize
 from sampling import DiffPIR
 import sys
-from deepinv.physics import MRI, GaussianNoise
+from deepinv.physics import MRI, GaussianNoise, PoissonNoise
 from deepinv.physics.generator import GaussianMaskGenerator
 
 
@@ -63,7 +63,7 @@ for i in range(ind_start, ind_end + 1):
     mask_gen = GaussianMaskGenerator(acceleration=acceleration, img_size=(img_size,img_size), seed=i)
     mask = mask_gen.step()["mask"].to(device)
 
-    noise_model = GaussianNoise(sigma, rng=torch.Generator(device=device))
+    noise_model = PoissonNoise()#GaussianNoise(sigma, rng=torch.Generator(device=device))
     noise_model.rng_manual_seed(i)  # for reproducibility
     
     physics = MRI(mask=mask, img_size=(img_size, img_size), device=device, noise_model=noise_model)

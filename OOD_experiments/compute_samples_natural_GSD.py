@@ -3,13 +3,15 @@ import numpy as np
 import os
 from prior_comparison import DegradedLikelihood
 from utils import device, json_to_dict
-from sampling import DiffPIR
+from sampling import SKROCK
+from priors import GSDPrior, L2
+from deepinv.models import GSDRUNet
+
 import sys
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
 from experiments_utils import generate_blur_operator
 from deepinv.physics.blur import gaussian_blur
-from deepinv.models import DiffUNet
 
 
 if len(sys.argv[1:]) == 3:
@@ -23,13 +25,12 @@ config_file = json_to_dict(os.path.join(out_folder, "config.json"))
 in_folder = config_file["in_folder"]
 
 model_path = config_file["model_path"]
-denoiser = DiffUNet(pretrained=model_path, in_channels=3, out_channels=3, large_model=False).to(device)
+denoiser = GSDRUNet(pretrained=model_path, in_channels=3, out_channels=3, device=device)
 
 sigma = config_file["sigma"]  # measurement noise
 img_size = 256
 
-nb_steps, nb_noise = config_file["nb_steps"], config_file["nb_noise"] 
-niter_diffpir = 300
+nb_steps, nb_noise = 30, config_file["nb_noise"]  #config_file["nb_steps"]
 batch_size = 2
 
 noise_schedule_path = config_file["noise_path"]  
@@ -38,15 +39,28 @@ noise_schedule = torch.tensor(np.load(noise_schedule_path), device=device).float
 alpha = torch.tensor(config_file["alpha"], device=device)
 sigma_blur = config_file["sigma_blur"]  # gaussian blur standard deviation
 
+lam = 700.
+g = GSDPrior(torch.tensor(lam), denoiser)
+L_g = lam*5
+s=15
+ls = (s - 0.5)**2*(2 - 4/3*0.05) - 1.5
+
+
 val_transform = transforms.Compose([transforms.Resize((256, 256)), transforms.ToTensor()])
 ds = ImageFolder(in_folder, val_transform)  # create a dataloader instance
-
+print("sigma {} ".format(sigma_blur))
 for i in range(ind_start, ind_end + 1):
     print("Computing for image " + str(i))
     
     physics = generate_blur_operator(img_size, 
                                      filter_torch=gaussian_blur(sigma=(sigma_blur, sigma_blur)).to(device), 
                                      sigma=sigma)
+    if i == ind_start:
+        L_f = physics.compute_norm(x0=torch.randn_like(ds[i][0].to(device)), tol=1e-5)  
+        gamma = 0.98*ls/(L_f/ (sigma**2 / alpha)  + L_g)
+        gammap = 0.98*ls/(L_f/ (sigma**2 / (1-alpha))  + L_g)
+        print("gamma ", gamma, gammap)
+
     physics.noise_model.rng_manual_seed(i)  # for reproducibility
     
     img_path = ds.samples[i]
@@ -54,16 +68,15 @@ for i in range(ind_start, ind_end + 1):
     x = x.unsqueeze(0).to(device)
     y = physics(x)  # apply blur and noise
 
-    dl = DegradedLikelihood(y=y, prior=denoiser, physics=physics, sigma=sigma, gamma=0, 
+    dl = DegradedLikelihood(y=y, prior=g, physics=physics, sigma=sigma, gamma=gamma, 
                             X_init=physics.A_adjoint(y).to(device).clone(),
-                            sampler=DiffPIR, sampler_kwargs={'batch_size':1, 'physics':physics,  
-                                                            'denoiser':denoiser, 'max_iter': niter_diffpir}, 
-                            project=None, alpha=alpha, batch_size=batch_size)
+                            sampler=SKROCK, sampler_kwargs={'s':s}, 
+                            project=None, alpha=alpha, batch_size=batch_size, gammap=gammap)
 
 
     
-    samples_x, samples_ym, samples_yp, samples_xp = dl.save_samples(nb_steps, burnin_ratio=0, nb_noise=nb_noise, 
-                                                                    thinning=1, thinning_noise=0, 
+    samples_x, samples_ym, samples_yp, samples_xp = dl.save_samples(nb_steps, burnin_ratio=50, nb_noise=nb_noise, 
+                                                                    thinning=5, thinning_noise=20, 
                                                                     noise_schedule=noise_schedule, compute_xp=True)
 
    

@@ -45,7 +45,7 @@ kernel_comparison_SAPG.py is used to fit the regularization parameter for each k
 
 Use compute_samples_natural.py to generate samples for prior misspecification testing on natural images, and compute_samples_mri.py for MRI experiments:
 ```
-python3 compute_samples_natural.py "results/diffusion/natural/FFHQ_FFHQ_05" 0 74
+python3 -m OOD_experiments.compute_samples_natural.py "results/diffusion/natural/FFHQ_FFHQ_05" 0 74
 ```
 to compute the samples indexed 0 to 74 for the experiment described in "results/diffusion/natural/FFHQ_FFHQ_05/config.json". The samples are saved in the same directory as the config file.
 The samples can then be post-processed using OOD_detection.ipynb to compute the metrics.

@@ -1,4 +1,6 @@
 from deepinv.optim.prior import WaveletPrior as _DeepInvWaveletPrior
+from deepinv.optim.prior import TVPrior as dinv_tv
+
 import torch
 from utils import device
 
@@ -181,3 +183,18 @@ class L1Prior(ParametrizedPrior):
 
     def grad_param(self, x):
         return torch.sum(torch.abs(x))
+
+
+class TVPrior(ParametrizedPrior):
+    def __init__(self, param, n_it_max=1000):
+        super().__init__(param)
+        self.dinv_tv = dinv_tv(n_it_max=n_it_max)
+
+    def grad(self, x, lam_reg):
+        return (x - self.dinv_tv.prox(x, gamma=self.param*lam_reg)) / lam_reg
+
+    def forward(self, x):
+        return self.dinv_tv(x) * self.param 
+
+    def grad_param(self, x):
+        return self.dinv_tv(x)

@@ -52,7 +52,7 @@ The samples can then be post-processed using OOD_detection.ipynb to compute the 
 
 ## Gaussian Analytical case
 
-The analytical test cases are implemented in test_evaluation.py.
+The analytical test cases are implemented in the `gaussian_experience/` directory in `test_evaluation.py` and `experiment_bayes_factor.py`.
 
 ## References
 

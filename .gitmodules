@@ -1,0 +1,4 @@
+[submodule "proxnest_comparison/code/proxnest"]
+	path = proxnest_comparison/code/proxnest
+	url = https://github.com/astro-informatics/proxnest.git
+	branch = u/tobias-liaudat/learned_nested

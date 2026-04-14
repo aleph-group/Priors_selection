@@ -1,13 +1,13 @@
 *__pycache__/
 *.ipynb_checkpoints/
 *.png
-*.npz
-*.npy
+# *.npz
+# *.npy
 *.json
 *.jpg
 *.h5
 *.pth
-*.pdf
+# *.pdf
 *.pkl
 *.pt
 *.ipynb_checkpoints
@@ -16,3 +16,6 @@
 *.tar
 *.safetensors
 *.tar.gz
+
+
+dev/

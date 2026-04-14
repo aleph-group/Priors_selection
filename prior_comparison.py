@@ -91,7 +91,8 @@ class DegradedLikelihood:
             self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
         else:
             self.diff_flag = False
-            gradUP = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, kwargs["lam_regp"])
+            lam_regp = kwargs.get("lam_regp", lam_reg)
+            gradUP = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, lam_regp)
             self.samplerp = sampler(gradUP, kwargs["gammap"], X_post, proj=proj, **sampler_kwargs)
 
     def _update_alpha(self, new_val):

@@ -48,8 +48,6 @@ class DegradedLikelihood:
         self.calpha = torch.sqrt(self.alpha / (1 - self.alpha))
         self.y = y
         self.dimx = y.numel()
-        self.gamma = gamma  # MC step
-        self.lam_reg = lam_reg  # prior regularization parameter
 
         if project == "clamp":
             proj = lambda t: torch.clamp(t, 0.0, 1.0)
@@ -93,6 +91,8 @@ class DegradedLikelihood:
             self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(self.alpha)
         else:
             self.diff_flag = False
+            gradUP = lambda t, y: self.f_add.grad(t, y) + self.prior.grad(t, kwargs["lam_regp"])
+            self.samplerp = sampler(gradUP, kwargs["gammap"], X_post, proj=proj, **sampler_kwargs)
 
     def _update_alpha(self, new_val):
         self.alpha = new_val
@@ -495,18 +495,24 @@ class DegradedLikelihood:
                         self.sampler.model.sigma = self.f.sigma / torch.sqrt(
                             1 - self.alpha
                         )
-                    for _ in range(thinning):
-                        self.sampler(self.factor(self.y_add))
+                        samples_xp[t] = self.sampler.X.view(
+                            (self.batch_size,) + self.y.shape[1:]
+                        ).clone()
 
-                    samples_xp[t] = self.sampler.X.view(
-                        (self.batch_size,) + self.y.shape[1:]
-                    ).clone()
-
-                    if self.diff_flag:  # revert back to y- noise level
                         self.sampler.p.noise_model.sigma = self.f.sigma / torch.sqrt(
                             self.alpha
                         )
                         self.sampler.model.sigma = self.f.sigma / torch.sqrt(self.alpha)
+                    else:
+                        self.samplerp.X = self.sampler.X.clone()
+
+                        for _ in range(thinning):
+                            self.samplerp(self.factor(self.y_add))
+                            
+                        samples_xp[t] = self.samplerp.X.view(
+                            (self.batch_size,) + self.y.shape[1:]
+                        ).clone()
+
 
         samples_x = samples_x.reshape((-1, n_rem) + samples_x.shape[-3:])
         ym_trace = ym_trace.reshape((-1,) + self.y.shape[1:])
